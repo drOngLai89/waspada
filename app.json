@@ -1,29 +1,33 @@
 {
   "expo": {
-    "name": "berani",
+    "name": "Berani",
     "slug": "berani",
+    "scheme": "berani",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
-    "ios": {
-      "supportsTablet": true
+      "backgroundColor": "#111111"
     },
     "android": {
+      "package": "com.drsherman.berani",
+      "versionCode": 1,
+      "permissions": ["READ_MEDIA_IMAGES", "CAMERA"],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true
+        "backgroundColor": "#111111"
+      }
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Berani to select incident photos.",
+          "cameraPermission": "Allow Berani to take photos for incident reports."
+        }
+      ]
+    ]
   }
 }
