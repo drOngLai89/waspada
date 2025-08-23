@@ -44,4 +44,8 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+<<<<<<< HEAD
 >>>>>>> 97c7812 (Initial commit)
+=======
+berani-release-key.jks
+>>>>>>> 183eebc (Ignore keystore file)

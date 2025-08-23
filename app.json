@@ -14,7 +14,11 @@
     "android": {
       "package": "com.drsherman.berani",
       "versionCode": 1,
-      "permissions": ["READ_MEDIA_IMAGES", "CAMERA"],
+      "permissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#111111"
@@ -28,6 +32,11 @@
           "cameraPermission": "Allow Berani to take photos for incident reports."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "ea4d8f65-62de-4361-ab6d-37952c73e0f1"
+      }
+    }
   }
 }
