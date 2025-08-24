@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity, Platform,
-  Image, Alert, Share, Modal
+  Image, Alert, Share, Modal, ActivityIndicator
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -49,6 +49,9 @@ export default function NewReportScreen() {
   const [description, setDescription] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
   const [aiText, setAiText] = useState('AI-generated report will appear here.');
+
+  // NEW: loading state for Generate button
+  const [loading, setLoading] = useState(false);
 
   // Android inline toggles
   const [showDateA, setShowDateA] = useState(false);
@@ -109,6 +112,8 @@ export default function NewReportScreen() {
 
   async function onGenerate() {
     try {
+      setLoading(true);                // NEW: show spinner
+      setAiText('Generating…');        // optional: show text while loading
       const payload = {
         category,
         dateISO: date.toISOString(),
@@ -117,9 +122,11 @@ export default function NewReportScreen() {
         description,
       };
       const out = await generateReport(payload);
-      setAiText(out.report || 'No result.');
+      setAiText(out?.report ? out.report : 'No result.');
     } catch (e: any) {
       setAiText('(Error) ' + (e?.message ?? 'Failed to generate'));
+    } finally {
+      setLoading(false);               // NEW: hide spinner
     }
   }
 
@@ -149,7 +156,6 @@ export default function NewReportScreen() {
 
   async function onShare() {
     try {
-      // If Sharing unavailable (rare), fall back to plain text share
       const textFallback =
         `Category: ${category}\nDate: ${date.toISOString()}\nTime: ${time.toISOString()}\n` +
         `Location: ${locationText}\n\nDescription:\n${description}\n\nAI Report:\n${aiText}`;
@@ -160,7 +166,6 @@ export default function NewReportScreen() {
         return;
       }
 
-      // Convert photos to base64 (ensures they embed reliably in the PDF)
       const imgHtmlParts: string[] = [];
       for (const uri of photos) {
         try {
@@ -168,9 +173,7 @@ export default function NewReportScreen() {
           imgHtmlParts.push(
             `<div class="photo"><img src="data:image/jpeg;base64,${b64}" /></div>`
           );
-        } catch {
-          // Skip a photo if it fails to read
-        }
+        } catch {}
       }
 
       const html = `
@@ -211,12 +214,10 @@ export default function NewReportScreen() {
 </html>`;
 
       const { uri } = await Print.printToFileAsync({ html });
-      // Move to a nicer filename
       const target = `${FileSystem.documentDirectory}Berani_Report_${Date.now()}.pdf`;
       await FileSystem.moveAsync({ from: uri, to: target });
       await Sharing.shareAsync(target, { mimeType: 'application/pdf', dialogTitle: 'Share Berani report' });
     } catch (e: any) {
-      // Fallback to text if anything goes wrong while building the PDF
       const fallback =
         `Category: ${category}\nDate: ${date.toISOString()}\nTime: ${time.toISOString()}\n` +
         `Location: ${locationText}\n\nDescription:\n${description}\n\nAI Report:\n${aiText}`;
@@ -396,11 +397,24 @@ export default function NewReportScreen() {
 
       {/* AI Report */}
       <Text style={{ color: '#C9D7F3', fontWeight: '700', marginTop: 18, marginBottom: 8 }}>AI Report</Text>
-      <TouchableOpacity onPress={onGenerate} style={{
-        backgroundColor: '#1B2340', borderColor: '#2B3963', borderWidth: 1,
-        paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginBottom: 10
-      }}>
-        <Text style={{ color: '#E8ECF3', fontWeight: '700' }}>Generate</Text>
+      <TouchableOpacity
+        onPress={onGenerate}
+        disabled={loading}
+        style={{
+          backgroundColor: '#1B2340',
+          borderColor: '#2B3963',
+          borderWidth: 1,
+          paddingVertical: 14,
+          borderRadius: 12,
+          alignItems: 'center',
+          marginBottom: 10,
+          opacity: loading ? 0.6 : 1
+        }}>
+        {loading ? (
+          <ActivityIndicator color="#E8ECF3" />
+        ) : (
+          <Text style={{ color: '#E8ECF3', fontWeight: '700' }}>Generate</Text>
+        )}
       </TouchableOpacity>
       <View style={{
         backgroundColor: '#111830', borderColor: '#1E2A4A', borderWidth: 1,
