@@ -21,7 +21,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     infoPlist: {
       NSCameraUsageDescription: "Berani needs camera access to capture photos as evidence for your reports.",
       NSPhotoLibraryUsageDescription: "Berani needs photo library access to attach evidence photos to your reports.",
-      NSPhotoLibraryAddUsageDescription: "Berani may save exports to your photo library if you choose to share."
+      NSPhotoLibraryAddUsageDescription: "Berani may save exports to your photo library if you choose to share.",
+      ITSAppUsesNonExemptEncryption: false
     }
   },
   android: {
@@ -29,9 +30,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     permissions: []
   },
   extra: {
-    // Your backend env if you use it:
     API_BASE_URL: process.env.API_BASE_URL,
-    // <<< This links the local project to your EAS project >>>
     eas: { projectId: "ea4d8f65-62de-4361-ab6d-37952c73e0f1" }
   },
   plugins: []
