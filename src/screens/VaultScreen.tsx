@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert, Image } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -11,6 +11,7 @@ type Item = {
   locationText: string;
   description: string;
   aiText: string;
+  photos?: string[];
 };
 
 const KEY = 'berani_vault';
@@ -48,7 +49,17 @@ export default function VaultScreen() {
             <Text style={styles.title}>{item.category}</Text>
             <Text style={styles.meta}>{new Date(item.date).toLocaleDateString()} • {new Date(item.time).toLocaleTimeString()}</Text>
             {item.locationText ? <Text style={styles.meta}>{item.locationText}</Text> : null}
-            {item.aiText ? <Text style={styles.body}>{item.aiText}</Text> : null}
+            {item.description ? <Text style={styles.body}>{item.description}</Text> : null}
+            {item.aiText ? <Text style={[styles.body, {marginTop:6}]}>{item.aiText}</Text> : null}
+
+            {Array.isArray(item.photos) && item.photos.length > 0 && (
+              <View style={styles.grid}>
+                {item.photos.map((uri, i) => (
+                  <Image key={uri + i} source={{ uri }} style={styles.thumb} />
+                ))}
+              </View>
+            )}
+
             <TouchableOpacity style={styles.deleteBtn} onPress={() => onDelete(item.id)}>
               <Text style={{ color:'white', fontWeight:'700' }}>Delete</Text>
             </TouchableOpacity>
@@ -63,6 +74,8 @@ const styles = StyleSheet.create({
   card: { backgroundColor:'#111830', borderColor:'#1E2A4A', borderWidth:1, borderRadius:12, padding:12, marginBottom:12 },
   title: { color:'#E8ECF3', fontWeight:'700', marginBottom:4 },
   meta: { color:'#9CA3AF', marginBottom:4 },
-  body: { color:'#C9D7F3', marginTop:6 },
-  deleteBtn: { alignSelf:'flex-end', marginTop:8, backgroundColor:'#ef4444', paddingVertical:8, paddingHorizontal:12, borderRadius:8 }
+  body: { color:'#C9D7F3' },
+  grid: { flexDirection:'row', flexWrap:'wrap', gap:8, marginTop:8 },
+  thumb: { width:88, height:88, borderRadius:8 },
+  deleteBtn: { alignSelf:'flex-end', marginTop:10, backgroundColor:'#ef4444', paddingVertical:8, paddingHorizontal:12, borderRadius:8 }
 });

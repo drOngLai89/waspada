@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { sendCounsellorMessage } from '../utils/api';
 
@@ -21,7 +21,6 @@ export default function AIScreen() {
   const [loading, setLoading] = useState(false);
   const listRef = useRef<FlatList<Msg>>(null);
 
-  // Make the header readable on dark background
   useLayoutEffect(() => {
     nav.setOptions?.({
       headerStyle: { backgroundColor: '#0B1226' },
@@ -30,11 +29,9 @@ export default function AIScreen() {
     } as any);
   }, [nav]);
 
-  useEffect(() => {
-    listRef.current?.scrollToEnd({ animated: true });
-  }, [messages.length]);
+  useEffect(() => { listRef.current?.scrollToEnd({ animated: true }); }, [messages.length]);
 
-  async function send() {
+  const send = async () => {
     const text = input.trim();
     if (!text || loading) return;
 
@@ -44,19 +41,25 @@ export default function AIScreen() {
 
     try {
       setLoading(true);
-      // Call your backend (Render) with chat history
       const reply = await sendCounsellorMessage(
         messages.concat(userMsg).map(m => ({ role: m.role, content: m.text }))
       );
-
-      const aiMsg: Msg = { id: `a_${Date.now()}`, role: 'assistant', text: reply };
-      setMessages(prev => [...prev, aiMsg]);
-    } catch (e: any) {
-      Alert.alert('AI error', e?.message ?? 'Failed to get a reply.');
+      setMessages(prev => [...prev, { id: `a_${Date.now()}`, role: 'assistant', text: reply }]);
+    } catch {
+      // graceful fallback
+      const fallback =
+        "I'm sorry—I'm having trouble connecting right now, but you're not alone.\n\n" +
+        "If you’re in danger, call **999** immediately.\n\n" +
+        "24/7 Malaysia helplines:\n" +
+        "• **Talian Kasih 15999** (WhatsApp 019-2615999)\n" +
+        "• **Befrienders** 03-7627 2929\n" +
+        "• **WAO Hotline** +603-7956 3488 (WhatsApp +6018-988 8058)\n\n" +
+        "You can keep talking to me, and I’ll try to reconnect.";
+      setMessages(prev => [...prev, { id: `a_${Date.now()}`, role: 'assistant', text: fallback }]);
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   const renderItem = ({ item }: { item: Msg }) => (
     <View style={[styles.bubble, item.role === 'user' ? styles.me : styles.ai]}>
