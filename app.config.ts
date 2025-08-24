@@ -1,20 +1,9 @@
-import { ConfigContext, ExpoConfig } from "@expo/config";
+import { ExpoConfig } from 'expo-config';
 
-export default ({ config }: ConfigContext): ExpoConfig => ({
+export default (): ExpoConfig => ({
   name: "Berani",
   slug: "berani",
   scheme: "berani",
-  version: "1.0.0",
-  orientation: "portrait",
-  icon: "./assets/icon.png",
-  userInterfaceStyle: "automatic",
-  splash: {
-    image: "./assets/splash.png",
-    resizeMode: "contain",
-    backgroundColor: "#ffffff"
-  },
-  updates: { fallbackToCacheTimeout: 0 },
-  assetBundlePatterns: ["**/*"],
   ios: {
     bundleIdentifier: "com.drsherman.berani",
     supportsTablet: false,
@@ -30,7 +19,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     permissions: []
   },
   extra: {
-    API_BASE_URL: process.env.API_BASE_URL,
+    // HARD-CODED so Expo sees it (change if your URL differs)
+    API_BASE_URL: "https://berani-backend.onrender.com",
+    REPORT_PATH: "/report",
+    CHAT_PATH: "/chat",
     eas: { projectId: "ea4d8f65-62de-4361-ab6d-37952c73e0f1" }
   },
   plugins: []
