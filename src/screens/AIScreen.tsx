@@ -1,129 +1,108 @@
-import React, { useState } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
-import { saveReport, Report } from '../utils/storage';
-import * as Clipboard from 'expo-clipboard';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { sendCounsellorMessage } from '../utils/api';
 
-// If you already have an API util, import that instead and delete this fallback:
-async function generateSummaryFallback(text: string): Promise<string> {
-  // Replace with your actual API if you have one (e.g., from ../utils/api)
-  // This is a safe fallback so the screen still works if API_BASE_URL is missing.
-  await new Promise(r => setTimeout(r, 1500));
-  return `AI Summary:\n${text.slice(0, 300)}${text.length > 300 ? '…' : ''}`;
-}
+type Msg = { id: string; role: 'user' | 'assistant'; text: string };
 
 export default function AIScreen() {
-  const [text, setText] = useState('');
-  const [summary, setSummary] = useState<string | null>(null);
+  const nav = useNavigation();
+  const [messages, setMessages] = useState<Msg[]>([
+    {
+      id: 'm1',
+      role: 'assistant',
+      text:
+        "I'm here to support you. Tell me what happened and what you need right now. " +
+        "If you’re in immediate danger, call 999 (Malaysia) or your local emergency number. " +
+        "24/7 help: Talian Kasih 15999 (WhatsApp 019-2615999)."
+    }
+  ]);
+  const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const listRef = useRef<FlatList<Msg>>(null);
 
-  const onGenerate = async () => {
-    if (!text.trim()) return;
+  // Make the header readable on dark background
+  useLayoutEffect(() => {
+    nav.setOptions?.({
+      headerStyle: { backgroundColor: '#0B1226' },
+      headerTintColor: '#ffffff',
+      headerTitleStyle: { color: '#ffffff' }
+    } as any);
+  }, [nav]);
+
+  useEffect(() => {
+    listRef.current?.scrollToEnd({ animated: true });
+  }, [messages.length]);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || loading) return;
+
+    const userMsg: Msg = { id: `u_${Date.now()}`, role: 'user', text };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+
     try {
       setLoading(true);
-      setSummary(null);
+      // Call your backend (Render) with chat history
+      const reply = await sendCounsellorMessage(
+        messages.concat(userMsg).map(m => ({ role: m.role, content: m.text }))
+      );
 
-      // swap this for your real API call if you have one:
-      const s = await generateSummaryFallback(text.trim());
-
-      setSummary(s);
+      const aiMsg: Msg = { id: `a_${Date.now()}`, role: 'assistant', text: reply };
+      setMessages(prev => [...prev, aiMsg]);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to generate summary.');
+      Alert.alert('AI error', e?.message ?? 'Failed to get a reply.');
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const onCopy = async () => {
-    if (!summary) return;
-    await Clipboard.setStringAsync(summary);
-    Alert.alert('Copied', 'Summary copied to clipboard.');
-  };
-
-  const onSave = async () => {
-    try {
-      if (!summary) {
-        Alert.alert('Nothing to save', 'Generate a summary first.');
-        return;
-      }
-      const report: Report = {
-        id: `r_${Date.now()}`,
-        createdAt: Date.now(),
-        text: text.trim(),
-        summary
-      };
-      await saveReport(report);
-      Alert.alert('Saved', 'Saved to your Vault.');
-      setText('');
-      // keep summary visible or clear it—up to you:
-      // setSummary(null);
-    } catch (e: any) {
-      Alert.alert('Save failed', e?.message || 'Could not save to Vault.');
-    }
-  };
+  const renderItem = ({ item }: { item: Msg }) => (
+    <View style={[styles.bubble, item.role === 'user' ? styles.me : styles.ai]}>
+      <Text style={styles.bubbleText}>{item.text}</Text>
+    </View>
+  );
 
   return (
-    <ScrollView contentContainerStyle={styles.wrap}>
-      <Text style={styles.h1}>AI Summary</Text>
-      <TextInput
-        placeholder="Describe what happened…"
-        value={text}
-        onChangeText={setText}
-        style={styles.input}
-        multiline
-        editable={!loading}
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      <FlatList
+        ref={listRef}
+        contentContainerStyle={styles.list}
+        data={messages}
+        keyExtractor={(m) => m.id}
+        renderItem={renderItem}
       />
-
-      <TouchableOpacity
-        style={[styles.btn, loading || !text.trim() ? styles.btnDisabled : null]}
-        onPress={onGenerate}
-        disabled={loading || !text.trim()}
-      >
-        {loading ? <ActivityIndicator/> : <Text style={styles.btnText}>Generate AI Summary</Text>}
-      </TouchableOpacity>
-
-      {summary && (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Summary</Text>
-          <Text style={styles.cardBody}>{summary}</Text>
-
-          <View style={styles.row}>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={onCopy}>
-              <Text style={styles.secondaryText}>Copy</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.primaryBtn} onPress={onSave}>
-              <Text style={styles.primaryText}>Save to Vault</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+      {loading && (
+        <View style={styles.typing}><ActivityIndicator /><Text style={{ color:'#94a3b8', marginLeft: 8 }}>Assistant is typing…</Text></View>
       )}
-    </ScrollView>
+      <View style={styles.inputRow}>
+        <TextInput
+          placeholder="Type how you're feeling or what happened…"
+          placeholderTextColor="#64748b"
+          style={styles.textbox}
+          value={input}
+          onChangeText={setInput}
+          editable={!loading}
+          onSubmitEditing={send}
+          returnKeyType="send"
+        />
+        <TouchableOpacity style={[styles.sendBtn, (!input.trim() || loading) && { opacity: 0.5 }]} onPress={send} disabled={!input.trim() || loading}>
+          <Text style={{ color: 'white', fontWeight: '700' }}>Send</Text>
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { padding: 16 },
-  h1: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
-  input: {
-    minHeight: 140,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 12,
-    padding: 12,
-    backgroundColor: 'white',
-    textAlignVertical: 'top',
-    marginBottom: 12,
-  },
-  btn: { backgroundColor: '#2563eb', padding: 14, borderRadius: 12, alignItems: 'center', marginBottom: 12 },
-  btnDisabled: { opacity: 0.5 },
-  btnText: { color: 'white', fontWeight: '600' },
-
-  card: { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 12, padding: 12, backgroundColor: 'white' },
-  cardTitle: { fontWeight: '700', marginBottom: 8 },
-  cardBody: { color: '#111827', marginBottom: 12 },
-
-  row: { flexDirection: 'row', gap: 10 },
-  secondaryBtn: { flex: 1, borderWidth: 1, borderColor: '#cbd5e1', padding: 12, borderRadius: 10, alignItems: 'center' },
-  secondaryText: { color: '#334155', fontWeight: '600' },
-  primaryBtn: { flex: 1, backgroundColor: '#0ea5e9', padding: 12, borderRadius: 10, alignItems: 'center' },
-  primaryText: { color: 'white', fontWeight: '700' }
+  list: { padding: 16, backgroundColor: '#0B1226' },
+  bubble: { maxWidth: '80%', padding: 12, borderRadius: 14, marginBottom: 10 },
+  me: { alignSelf: 'flex-end', backgroundColor: '#2563eb' },
+  ai: { alignSelf: 'flex-start', backgroundColor: '#1f2937' },
+  bubbleText: { color: 'white' },
+  inputRow: { flexDirection: 'row', padding: 12, backgroundColor: '#0B1226', borderTopWidth: 1, borderTopColor: '#111827' },
+  textbox: { flex: 1, backgroundColor: '#0f172a', borderWidth: 1, borderColor: '#1f2937', borderRadius: 10, padding: 12, color: '#e5e7eb', marginRight: 8 },
+  sendBtn: { backgroundColor: '#0ea5e9', paddingHorizontal: 16, borderRadius: 10, justifyContent: 'center' },
+  typing: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 6 }
 });
