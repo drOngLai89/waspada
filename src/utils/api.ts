@@ -1,100 +1,96 @@
-import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
-function getBaseUrl(): string {
-  const expoCfg: any = (Constants as any).expoConfig || (Constants as any).manifest || {};
-  const extra = (expoCfg && expoCfg.extra) || {};
-  const fromExtra = extra.API_BASE_URL;
-  const fromEnv = (process as any)?.env?.API_BASE_URL;
-  const fromGlobal = (global as any)?.API_BASE_URL;
-  const base = (fromExtra || fromEnv || fromGlobal || '').toString().trim();
-  console.log('API_BASE_URL ⇒', base || '(empty)');
-  return base.replace(/\/+$/, '');
+type ReportPayload = {
+  category: string;
+  dateISO: string;
+  timeISO: string;
+  locationText: string;
+  description: string;
+};
+
+const BASE = (process.env.API_BASE_URL || '').trim();
+console.log('API_BASE_URL ⇒', BASE || '(not set)');
+
+function candidates(base: string | undefined, paths: string[]) {
+  if (!base) return [];
+  const norm = base.replace(/\/+$/,'');
+  return paths.map(p => norm + (p.startsWith('/') ? p : '/' + p));
 }
 
-async function tryPostJSON<T>(base: string, paths: string[], body: any): Promise<T> {
-  let lastErr: any = null;
-  for (const p of paths) {
-    const url = `${base}${p.startsWith('/') ? '' : '/'}${p}`;
+export async function generateReport(payload: ReportPayload): Promise<{report:string}> {
+  const urls = candidates(BASE, [
+    process.env.REPORT_PATH || '/report',
+    '/api/report', '/v1/report', '/generate', '/api/generate'
+  ]);
+
+  for (const url of urls) {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
       });
-      if (res.status === 404) {
-        console.log('Endpoint 404, trying next →', url);
-        continue; // try next candidate
+      if (res.ok) {
+        const j = await res.json();
+        if (j?.report) return { report: j.report };
+      } else {
+        console.log(`Endpoint ${res.status}, trying next → ${url}`);
       }
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status} at ${url} ${text ? '— ' + text : ''}`);
-      }
-      // assume JSON, but allow text
-      const ct = res.headers.get('content-type') || '';
-      if (ct.includes('application/json')) return (await res.json()) as T;
-      const text = await res.text();
-      return { reply: text } as unknown as T;
-    } catch (e) {
-      lastErr = e;
-      console.log('POST failed:', url, String(e));
+    } catch (e:any) {
+      console.log(`Endpoint error, trying next → ${url}`, e?.message || String(e));
     }
   }
-  throw lastErr ?? new Error(`No working endpoint. Tried: ${paths.join(', ')}`);
+
+  // ---- Local fallback so the app still works without a server ----
+  const { category, dateISO, timeISO, locationText, description } = payload;
+  const fallback =
+`### Description of the Incident:
+${description || 'No description provided.'}
+
+### Impact:
+We are still gathering details. Consider any injuries and how you feel.
+
+### Next Steps:
+1) If you’re in immediate danger, call **999** (Malaysia) now.
+2) Save evidence (photos, messages) safely in the Vault.
+3) Reach out: Talian Kasih **15999** (WhatsApp **019-2615999**),
+   Befrienders **03-7627 2929**, WAO **+603-7956 3488** (WhatsApp **+6018-988 8058**).`;
+  return { report: fallback };
 }
 
-/** Generate the long-form report used by New Report screen */
-export async function generateReport(payload: {
-  category: string; dateISO: string; timeISO: string; locationText: string; description: string;
-}): Promise<{ report: string }> {
-  const base = getBaseUrl();
-  if (!base) throw new Error('API_BASE_URL is not set');
+export async function sendCounsellorMessage(messages: {role:'user'|'assistant'|'system', content:string}[]) {
+  const urls = candidates(BASE, [
+    process.env.CHAT_PATH || '/chat',
+    '/api/chat', '/v1/chat', '/messages', '/api/messages', '/respond'
+  ]);
 
-  const expoCfg: any = (Constants as any).expoConfig || (Constants as any).manifest || {};
-  const extra = (expoCfg && expoCfg.extra) || {};
-  const override = (extra.REPORT_PATH || (process as any)?.env?.REPORT_PATH) as string | undefined;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ messages }),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        if (j?.reply) return { reply: j.reply };
+      } else {
+        console.log(`Endpoint ${res.status}, trying next → ${url}`);
+      }
+    } catch (e:any) {
+      console.log(`Endpoint error, trying next → ${url}`, e?.message || String(e));
+    }
+  }
 
-  const candidates = [
-    ...(override ? [override] : []),
-    '/report',
-    '/api/report',
-    '/v1/report',
-    '/generate',
-    '/api/generate',
-  ];
+  // Local supportive fallback
+  const reply =
+`I'm here with you. If you’re in immediate danger, call **999** now.
 
-  const data: any = await tryPostJSON<any>(base, candidates, payload);
-  const text = data.report ?? data.summary ?? data.text ?? data.message;
-  return { report: (text ?? JSON.stringify(data)).toString() };
-}
+24/7 Malaysia helplines:
+• **Talian Kasih 15999** (WhatsApp **019-2615999**)
+• **Befrienders** **03-7627 2929**
+• **WAO Hotline** **+603-7956 3488** (WhatsApp **+6018-988 8058**)
 
-/** Counsellor-style chat for the AI Assistant screen */
-export async function sendCounsellorMessage(
-  messages: { role: 'user' | 'assistant'; content: string }[]
-): Promise<string> {
-  const base = getBaseUrl();
-  if (!base) throw new Error('API_BASE_URL is not set');
-
-  const expoCfg: any = (Constants as any).expoConfig || (Constants as any).manifest || {};
-  const extra = (expoCfg && expoCfg.extra) || {};
-  const override = (extra.CHAT_PATH || (process as any)?.env?.CHAT_PATH) as string | undefined;
-
-  const candidates = [
-    ...(override ? [override] : []),
-    '/chat',
-    '/api/chat',
-    '/v1/chat',
-    '/messages',
-    '/api/messages',
-    '/respond',
-  ];
-
-  const data: any = await tryPostJSON<any>(base, candidates, {
-    system:
-      "You are a compassionate counsellor for users in Malaysia. Ensure safety first: if risk of harm, advise calling 999 immediately. " +
-      "Offer practical next steps and local resources when relevant: Talian Kasih 15999 (WhatsApp 019-2615999), Befrienders 03-7627 2929, WAO +603-7956 3488 / WhatsApp +6018-988 8058. " +
-      "Avoid medical/legal diagnosis; be brief, clear, and supportive.",
-    messages,
-  });
-
-  return (data.reply ?? data.text ?? data.message ?? JSON.stringify(data)).toString();
+You can keep talking to me here and I’ll listen.`;
+  return { reply };
 }

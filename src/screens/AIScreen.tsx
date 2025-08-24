@@ -1,111 +1,94 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useLayoutEffect, useRef, useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { sendCounsellorMessage } from '../utils/api';
 
-type Msg = { id: string; role: 'user' | 'assistant'; text: string };
+type Msg = { id: string; role: 'user'|'assistant'; content: string };
 
 export default function AIScreen() {
-  const nav = useNavigation();
+  const navigation = useNavigation<any>();
+  const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Msg[]>([
     {
-      id: 'm1',
+      id: 'hello',
       role: 'assistant',
-      text:
-        "I'm here to support you. Tell me what happened and what you need right now. " +
-        "If you’re in immediate danger, call 999 (Malaysia) or your local emergency number. " +
-        "24/7 help: Talian Kasih 15999 (WhatsApp 019-2615999)."
-    }
+      content:
+        "I'm here to support you. Tell me what happened and what you need right now. If you're in immediate danger, call 999 (Malaysia) or your local emergency number.\n24/7 help: Talian Kasih 15999 (WhatsApp 019-2615999).",
+    },
   ]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const listRef = useRef<FlatList<Msg>>(null);
+  const [sending, setSending] = useState(false);
+  const listRef = useRef<FlatList>(null);
 
   useLayoutEffect(() => {
-    nav.setOptions?.({
+    navigation.setOptions({
       headerStyle: { backgroundColor: '#0B1226' },
-      headerTintColor: '#ffffff',
-      headerTitleStyle: { color: '#ffffff' }
-    } as any);
-  }, [nav]);
+      headerTitleStyle: { color: '#E8ECF3' },
+      title: 'AI Assistant',
+    });
+  }, [navigation]);
 
-  useEffect(() => { listRef.current?.scrollToEnd({ animated: true }); }, [messages.length]);
-
-  const send = async () => {
+  async function onSend() {
     const text = input.trim();
-    if (!text || loading) return;
-
-    const userMsg: Msg = { id: `u_${Date.now()}`, role: 'user', text };
-    setMessages(prev => [...prev, userMsg]);
+    if (!text || sending) return;
+    const userMsg: Msg = { id: Date.now() + '_u', role: 'user', content: text };
+    setMessages(m => [...m, userMsg]);
     setInput('');
+    setSending(true);
 
     try {
-      setLoading(true);
-      const reply = await sendCounsellorMessage(
-        messages.concat(userMsg).map(m => ({ role: m.role, content: m.text }))
-      );
-      setMessages(prev => [...prev, { id: `a_${Date.now()}`, role: 'assistant', text: reply }]);
-    } catch {
-      // graceful fallback
-      const fallback =
-        "I'm sorry—I'm having trouble connecting right now, but you're not alone.\n\n" +
-        "If you’re in danger, call **999** immediately.\n\n" +
-        "24/7 Malaysia helplines:\n" +
-        "• **Talian Kasih 15999** (WhatsApp 019-2615999)\n" +
-        "• **Befrienders** 03-7627 2929\n" +
-        "• **WAO Hotline** +603-7956 3488 (WhatsApp +6018-988 8058)\n\n" +
-        "You can keep talking to me, and I’ll try to reconnect.";
-      setMessages(prev => [...prev, { id: `a_${Date.now()}`, role: 'assistant', text: fallback }]);
+      const convo = [
+        ...messages.map(m => ({ role: m.role, content: m.content })),
+        { role: 'user' as const, content: text },
+      ];
+      const r = await sendCounsellorMessage(convo);
+      const assistant: Msg = { id: Date.now() + '_a', role: 'assistant', content: r.reply || "I'm here with you." };
+      setMessages(m => [...m, assistant]);
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
+    } catch (e:any) {
+      Alert.alert('AI error', e?.message || String(e));
     } finally {
-      setLoading(false);
+      setSending(false);
     }
-  };
+  }
 
-  const renderItem = ({ item }: { item: Msg }) => (
-    <View style={[styles.bubble, item.role === 'user' ? styles.me : styles.ai]}>
-      <Text style={styles.bubbleText}>{item.text}</Text>
-    </View>
-  );
+  function Bubble({me, children}:{me?:boolean; children:React.ReactNode}) {
+    return (
+      <View style={{ alignSelf: me ? 'flex-end' : 'flex-start', maxWidth: '80%', marginVertical: 6 }}>
+        <View style={{
+          backgroundColor: me ? '#2A4AAC' : '#1E293B',
+          paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14
+        }}>
+          <Text style={{ color:'#E8ECF3', lineHeight:22 }}>{children}</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+    <KeyboardAvoidingView style={{ flex:1, backgroundColor:'#0B1226' }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <FlatList
         ref={listRef}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={{ padding:16 }}
+        style={{ flex:1 }}
         data={messages}
-        keyExtractor={(m) => m.id}
-        renderItem={renderItem}
+        keyExtractor={m => m.id}
+        renderItem={({item}) => (<Bubble me={item.role==='user'}>{item.content}</Bubble>)}
       />
-      {loading && (
-        <View style={styles.typing}><ActivityIndicator /><Text style={{ color:'#94a3b8', marginLeft: 8 }}>Assistant is typing…</Text></View>
-      )}
-      <View style={styles.inputRow}>
+
+      <View style={{ padding:12, borderTopColor:'#1E2A4A', borderTopWidth:1, backgroundColor:'#0B1226', flexDirection:'row', gap:8 }}>
         <TextInput
-          placeholder="Type how you're feeling or what happened…"
-          placeholderTextColor="#64748b"
-          style={styles.textbox}
           value={input}
           onChangeText={setInput}
-          editable={!loading}
-          onSubmitEditing={send}
+          placeholder="Type how you're feeling or what happened…"
+          placeholderTextColor="#6E7AA3"
+          style={{ flex:1, backgroundColor:'#111830', color:'#E8ECF3', borderRadius:12, paddingHorizontal:14, paddingVertical:12, borderWidth:1, borderColor:'#1E2A4A' }}
+          onSubmitEditing={onSend}
           returnKeyType="send"
         />
-        <TouchableOpacity style={[styles.sendBtn, (!input.trim() || loading) && { opacity: 0.5 }]} onPress={send} disabled={!input.trim() || loading}>
-          <Text style={{ color: 'white', fontWeight: '700' }}>Send</Text>
+        <TouchableOpacity onPress={onSend} disabled={sending} style={{ backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingHorizontal:18, borderRadius:12, justifyContent:'center', opacity: sending ? 0.6 : 1 }}>
+          <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Send</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  list: { padding: 16, backgroundColor: '#0B1226' },
-  bubble: { maxWidth: '80%', padding: 12, borderRadius: 14, marginBottom: 10 },
-  me: { alignSelf: 'flex-end', backgroundColor: '#2563eb' },
-  ai: { alignSelf: 'flex-start', backgroundColor: '#1f2937' },
-  bubbleText: { color: 'white' },
-  inputRow: { flexDirection: 'row', padding: 12, backgroundColor: '#0B1226', borderTopWidth: 1, borderTopColor: '#111827' },
-  textbox: { flex: 1, backgroundColor: '#0f172a', borderWidth: 1, borderColor: '#1f2937', borderRadius: 10, padding: 12, color: '#e5e7eb', marginRight: 8 },
-  sendBtn: { backgroundColor: '#0ea5e9', paddingHorizontal: 16, borderRadius: 10, justifyContent: 'center' },
-  typing: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 6 }
-});
