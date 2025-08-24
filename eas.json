@@ -3,7 +3,7 @@
     "production": {
       "autoIncrement": true,
       "android": { "buildType": "app-bundle" },
-      "ios": { "resourceClass": "m1-medium", "buildConfiguration": "Release" }
+      "ios": { "resourceClass": "m-medium", "buildConfiguration": "Release" }
     },
     "preview": {
       "autoIncrement": true,
