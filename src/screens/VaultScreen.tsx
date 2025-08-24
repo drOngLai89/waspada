@@ -1,61 +1,51 @@
-import * as React from 'react';
-import { useEffect, useState } from 'react';
-import { View, Text, FlatList, Pressable, StyleSheet, Modal, Image, ScrollView, Alert } from 'react-native';
-import { getAllReports, deleteReport } from '../utils/storage';
-import { ReportItem } from '../types';
+import React, { useCallback, useState } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { getReports, removeReport, Report } from '../utils/storage';
+import { useFocusEffect } from '@react-navigation/native';
 
 export default function VaultScreen() {
-  const [items, setItems] = useState<ReportItem[]>([]);
-  const [open, setOpen] = useState<ReportItem | null>(null);
-  async function load(){ setItems(await getAllReports()); }
-  useEffect(()=>{ load(); },[]);
-  async function onDelete(id:string){ await deleteReport(id); await load(); Alert.alert('Deleted','Report removed from Vault.'); setOpen(null); }
+  const [items, setItems] = useState<Report[]>([]);
+
+  const load = useCallback(async () => {
+    const list = await getReports();
+    setItems(list);
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const onDelete = async (id: string) => {
+    await removeReport(id);
+    await load();
+    Alert.alert('Deleted', 'Item removed from Vault.');
+  };
+
   return (
-    <View style={{ flex:1, padding:16 }}>
+    <View style={styles.wrap}>
+      <Text style={styles.h1}>Your Vault</Text>
       <FlatList
-        data={items} keyExtractor={(it)=>it.id}
-        ItemSeparatorComponent={()=><View style={{height:10}}/>}
-        renderItem={({item})=>(
-          <Pressable style={styles.card} onPress={()=>setOpen(item)}>
-            <Text style={styles.title}>{item.category}</Text>
-            <Text style={styles.sub}>{new Date(item.dateISO).toDateString()} • {new Date(item.timeISO).toLocaleTimeString()}</Text>
-            <Text style={styles.loc} numberOfLines={1}>{item.locationText || '(no location)'}</Text>
-          </Pressable>
+        data={items}
+        keyExtractor={(it) => it.id}
+        ListEmptyComponent={<Text style={{color:'#6b7280'}}>Nothing saved yet.</Text>}
+        renderItem={({ item }) => (
+          <View style={styles.card}>
+            <Text style={styles.date}>{new Date(item.createdAt).toLocaleString()}</Text>
+            {item.summary ? <Text style={styles.summary}>{item.summary}</Text> : null}
+            <TouchableOpacity style={styles.deleteBtn} onPress={() => onDelete(item.id)}>
+              <Text style={styles.deleteText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
         )}
-        ListEmptyComponent={<Text style={{ color:'#9BB7E6',textAlign:'center',marginTop:20 }}>No saved reports yet.</Text>}
       />
-      <Modal visible={!!open} animationType="slide" onRequestClose={()=>setOpen(null)}>
-        <View style={{ flex:1, backgroundColor:'#0B1220' }}>
-          <ScrollView contentContainerStyle={{ padding:16 }}>
-            <Text style={styles.title}>{open?.category}</Text>
-            {open && <>
-              <Text style={styles.sub}>{new Date(open.dateISO).toDateString()} • {new Date(open.timeISO).toLocaleTimeString()}</Text>
-              <Text style={styles.loc}>{open.locationText}</Text>
-              <Text style={styles.section}>Description</Text><Text style={styles.body}>{open.description}</Text>
-              <Text style={styles.section}>AI Report</Text><Text style={styles.body}>{open.aiReport}</Text>
-              <Text style={styles.section}>Photos</Text>
-              <View style={{ flexDirection:'row', flexWrap:'wrap', gap:8 }}>
-                {open.photoUris.map(u => <Image key={u} source={{ uri:u }} style={{ width:120, height:120, borderRadius:12 }}/>)}
-              </View>
-            </>}
-            <View style={{ height:20 }}/>
-            {open && <Pressable style={styles.btnDanger} onPress={()=>onDelete(open.id)}><Text style={styles.btnTxt}>Delete from Vault</Text></Pressable>}
-            <View style={{ height:20 }}/>
-            <Pressable style={styles.btn} onPress={()=>setOpen(null)}><Text style={styles.btnTxt}>Close</Text></Pressable>
-          </ScrollView>
-        </View>
-      </Modal>
     </View>
   );
 }
+
 const styles = StyleSheet.create({
-  card:{ backgroundColor:'#111830', borderRadius:14, padding:14, borderWidth:1, borderColor:'#1E2A4A' },
-  title:{ color:'#E8ECF3', fontSize:18, fontWeight:'800' },
-  sub:{ color:'#9BB7E6', marginTop:4 },
-  loc:{ color:'#C3D7FF', marginTop:6 },
-  section:{ color:'#E8ECF3', marginTop:16, fontWeight:'800' },
-  body:{ color:'#D5E2FF', marginTop:8, lineHeight:20 },
-  btn:{ backgroundColor:'#20335F', padding:12, borderRadius:12, alignItems:'center' },
-  btnDanger:{ backgroundColor:'#8B1C1C', padding:12, borderRadius:12, alignItems:'center' },
-  btnTxt:{ color:'#fff', fontWeight:'700' }
+  wrap: { flex: 1, padding: 16 },
+  h1: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
+  card: { backgroundColor: 'white', borderRadius: 12, borderWidth: 1, borderColor: '#e5e7eb', padding: 12, marginBottom: 12 },
+  date: { color: '#64748b', marginBottom: 6 },
+  summary: { color: '#0f172a' },
+  deleteBtn: { alignSelf: 'flex-end', marginTop: 10, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: '#ef4444' },
+  deleteText: { color: 'white', fontWeight: '700' },
 });

@@ -1,19 +1,34 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ReportItem } from '../types';
 
-const KEY = 'BERANI_VAULT_V1';
+export type Report = {
+  id: string;
+  createdAt: number;
+  text: string;
+  summary?: string;
+  photos?: string[]; // file:// URIs if you store images
+};
 
-export async function getAllReports(): Promise<ReportItem[]> {
+const KEY = 'berani:reports:v1';
+
+export async function getReports(): Promise<Report[]> {
   const raw = await AsyncStorage.getItem(KEY);
   if (!raw) return [];
-  try { const list = JSON.parse(raw) as ReportItem[]; return Array.isArray(list) ? list : []; }
-  catch { return []; }
+  try { return JSON.parse(raw) as Report[]; } catch { return []; }
 }
-export async function saveReport(item: ReportItem) {
-  const all = await getAllReports(); all.unshift(item);
-  await AsyncStorage.setItem(KEY, JSON.stringify(all));
+
+export async function saveReport(r: Report): Promise<void> {
+  const list = await getReports();
+  const idx = list.findIndex(x => x.id === r.id);
+  if (idx >= 0) list[idx] = r; else list.unshift(r);
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
 }
-export async function deleteReport(id: string) {
-  const all = await getAllReports();
-  await AsyncStorage.setItem(KEY, JSON.stringify(all.filter(r => r.id !== id)));
+
+export async function removeReport(id: string): Promise<void> {
+  const list = await getReports();
+  const next = list.filter(r => r.id !== id);
+  await AsyncStorage.setItem(KEY, JSON.stringify(next));
+}
+
+export async function clearReports(): Promise<void> {
+  await AsyncStorage.removeItem(KEY);
 }

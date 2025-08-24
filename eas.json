@@ -2,14 +2,28 @@
   "build": {
     "production": {
       "autoIncrement": true,
-      "android": { "buildType": "app-bundle" },
-      "ios": { "resourceClass": "m-medium", "buildConfiguration": "Release" }
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "resourceClass": "m-medium",
+        "buildConfiguration": "Release"
+      }
     },
     "preview": {
       "autoIncrement": true,
-      "android": { "buildType": "apk" },
-      "ios": { "simulator": true }
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": true
+      }
     }
   },
-  "submit": { "production": {} }
+  "submit": {
+    "production": {}
+  },
+  "cli": {
+    "appVersionSource": "remote"
+  }
 }
