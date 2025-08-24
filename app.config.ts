@@ -29,8 +29,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     permissions: []
   },
   extra: {
-    // If you read envs in code, reference them with process.env.MY_KEY via EAS Secrets
-    API_BASE_URL: process.env.API_BASE_URL
+    // Your backend env if you use it:
+    API_BASE_URL: process.env.API_BASE_URL,
+    // <<< This links the local project to your EAS project >>>
+    eas: { projectId: "ea4d8f65-62de-4361-ab6d-37952c73e0f1" }
   },
   plugins: []
 });
