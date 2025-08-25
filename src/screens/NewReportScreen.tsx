@@ -6,7 +6,6 @@ import {
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
-import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -65,27 +64,6 @@ export default function NewReportScreen() {
     () => time.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
     [time]
   );
-
-  async function onUseCurrentLocation() {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Location permission was not granted.');
-        return;
-      }
-      const loc = await Location.getCurrentPositionAsync({});
-      const rev = await Location.reverseGeocodeAsync(loc.coords);
-      if (rev && rev[0]) {
-        const r = rev[0];
-        const line = [r.name, r.street, r.postalCode, r.city, r.region, r.country].filter(Boolean).join(', ');
-        setLocationText(line);
-      } else {
-        setLocationText(`${loc.coords.latitude.toFixed(5)}, ${loc.coords.longitude.toFixed(5)}`);
-      }
-    } catch (e:any) {
-      Alert.alert('Location error', e?.message ?? String(e));
-    }
-  }
 
   async function onAddPhoto() {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -233,7 +211,7 @@ h1{margin:0 0 10px;font-size:22px} h2{margin:18px 0 8px;font-size:17px}
 
   return (
     <ScrollView style={{ flex:1, backgroundColor:'#0B1226' }} contentContainerStyle={{ padding:16, paddingBottom:40 }}>
-      <Text style={{ color:'#E8ECF3', fontWeight:'700', fontSize:28, textAlign:'center', marginBottom:10 }}>New Report</Text>
+      {/* Header removed as requested */}
 
       <Text style={{ color:'#C9D7F3', fontWeight:'700', marginBottom:6 }}>Category</Text>
       <View style={{ backgroundColor:'#111830', borderRadius:16, borderWidth:1, borderColor:'#1E2A4A', overflow:'hidden', marginBottom:12 }}>
@@ -276,9 +254,6 @@ h1{margin:0 0 10px;font-size:22px} h2{margin:18px 0 8px;font-size:17px}
           placeholderTextColor="#6E7AA3"
           style={{ flex:1, backgroundColor:'#111830', color:'#E8ECF3', borderRadius:12, paddingHorizontal:14, paddingVertical:12, borderWidth:1, borderColor:'#1E2A4A' }}
         />
-        <TouchableOpacity onPress={onUseCurrentLocation} style={{ backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingHorizontal:14, borderRadius:12, justifyContent:'center' }}>
-          <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Use current</Text>
-        </TouchableOpacity>
       </View>
 
       <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:16, marginBottom:6 }}>Description</Text>
