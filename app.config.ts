@@ -1,29 +1,34 @@
-import { ExpoConfig } from 'expo-config';
+import { ExpoConfig } from "expo/config";
 
-export default (): ExpoConfig => ({
+const config: ExpoConfig = {
   name: "Berani",
   slug: "berani",
-  scheme: "berani",
+  version: "1.0.3",
+  icon: "./assets/icon.png",
+  runtimeVersion: { policy: "sdkVersion" },
+  orientation: "portrait",
+  userInterfaceStyle: "automatic",
   ios: {
     bundleIdentifier: "com.drsherman.berani",
-    supportsTablet: false,
+    buildNumber: "15",
+    supportsTablet: true,
     infoPlist: {
-      NSCameraUsageDescription: "Berani needs camera access to capture photos as evidence for your reports.",
-      NSPhotoLibraryUsageDescription: "Berani needs photo library access to attach evidence photos to your reports.",
-      NSPhotoLibraryAddUsageDescription: "Berani may save exports to your photo library if you choose to share.",
-      ITSAppUsesNonExemptEncryption: false
+      NSLocationWhenInUseUsageDescription:
+        "Berani uses your location to tag reports with a nearby area for faster help and accurate routing.",
+      NSLocationAlwaysAndWhenInUseUsageDescription:
+        "Berani may access your location while the app is active to attach accurate incident locations."
     }
   },
   android: {
     package: "com.drsherman.berani",
-    permissions: []
+    versionCode: 15,
+    adaptiveIcon: {
+      foregroundImage: "./assets/icon.png",
+      backgroundColor: "#0B2E4A"
+    }
   },
-  extra: {
-    // HARD-CODED so Expo sees it (change if your URL differs)
-    API_BASE_URL: "https://berani-backend.onrender.com",
-    REPORT_PATH: "/report",
-    CHAT_PATH: "/chat",
-    eas: { projectId: "ea4d8f65-62de-4361-ab6d-37952c73e0f1" }
-  },
-  plugins: []
-});
+  plugins: ["expo-router"],
+  experiments: { typedRoutes: true }
+};
+
+export default config;
