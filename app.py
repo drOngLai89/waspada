@@ -6,10 +6,11 @@ from openai import OpenAI
 app = Flask(__name__)
 CORS(app)
 
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Uses OPENAI_API_KEY from environment (Render Environment variables)
+client = OpenAI()
 
 @app.get("/")
-def home():
+def root():
     return "Waspada backend is running ✅", 200
 
 @app.get("/health")
@@ -19,7 +20,7 @@ def health():
 @app.post("/chat")
 def chat():
     data = request.get_json(silent=True) or {}
-    prompt = data.get("prompt", "")
+    prompt = (data.get("prompt") or "").strip()
 
     if not prompt:
         return jsonify(error="Missing 'prompt'"), 400
@@ -28,11 +29,12 @@ def chat():
         return jsonify(error="OPENAI_API_KEY not set on server"), 500
 
     try:
-        resp = client.responses.create(
+        resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            input=prompt
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
         )
-        # responses API returns text in output_text
-        return jsonify(output=resp.output_text), 200
+        text = (resp.choices[0].message.content or "").strip()
+        return jsonify(output=text), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
