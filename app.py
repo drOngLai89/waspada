@@ -6,7 +6,6 @@ from openai import OpenAI
 app = Flask(__name__)
 CORS(app)
 
-# Uses OPENAI_API_KEY from environment (Render Environment variables)
 client = OpenAI()
 
 @app.get("/")
