@@ -1,91 +1,116 @@
-import os
-import base64
-from datetime import datetime
-from flask import Flask, jsonify, request
+import os, json, re
+from datetime import datetime, timezone
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
+
+AS_OF = "27 Dec 2025"
 
 app = Flask(__name__)
 CORS(app)
 
-client = OpenAI()
-
-APP_VERSION = os.environ.get("APP_VERSION", "dev")
-AS_OF_DATE = "27 Dec 2025"
-
-MALAYSIA_CHANNELS = {
-    "urgent_money_moved": [
-        {"name": "NSRC (National Scam Response Centre)", "type": "phone", "value": "997", "note": "Call immediately if money has moved."},
-        {"name": "Your bank 24/7 hotline", "type": "text", "value": "Call your bank’s official hotline immediately if you can’t get through to 997."},
-    ],
-    "pdrm_ccid": [
-        {"name": "CCID Infoline (WhatsApp)", "type": "whatsapp", "value": "+60132111222"},
-        {"name": "CCID Scam Response Centre", "type": "phone", "value": "+60326101559"},
-        {"name": "CCID Scam Response Centre (alt)", "type": "phone", "value": "+60326101599"},
-        {"name": "Semak Mule (CCID portal)", "type": "url", "value": "https://semakmule.rmp.gov.my/"},
-    ],
-    "cyber_incident": [
-        {"name": "Cyber999 (MyCERT) hotline", "type": "phone", "value": "+601300882999"},
-        {"name": "Cyber999 (MyCERT) emergency 24x7", "type": "phone", "value": "+60192665850"},
-        {"name": "Cyber999 (MyCERT) email", "type": "email", "value": "cyber999@cybersecurity.my"},
-    ],
-    "mcmc_content_telco": [
-        {"name": "MCMC hotline", "type": "phone", "value": "+601800188030"},
-        {"name": "MCMC WhatsApp", "type": "whatsapp", "value": "+60162206262"},
-        {"name": "MCMC email", "type": "email", "value": "aduanskmm@mcmc.gov.my"},
-        {"name": "MCMC portal", "type": "url", "value": "https://aduan.skmm.gov.my/"},
-    ],
-}
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 SYSTEM_PROMPT = f"""
-You are Waspada, a Malaysia-only anti-scam assistant.
-Today is {AS_OF_DATE}. You must ONLY provide advice relevant to Malaysia.
+You are Waspada, a Malaysia-only anti-scam assistant. Today is {AS_OF}.
 
-Important:
-- Do NOT invent hotlines, portals, laws, or agencies. Use ONLY the reporting channels I provide.
-- If the screenshot contains personal data (IC/passport/account numbers), advise the user to redact before sharing further.
-- Your job: (1) read the screenshot, (2) identify scam signals, (3) extract key entities, (4) give clear “do now” steps.
+You will analyze a scam screenshot (chat/SMS/WhatsApp/email/bank screen/ads).
+You must output STRICT JSON only. No markdown. No commentary outside JSON.
 
-Return STRICT JSON only with this schema:
+Rules:
+- Malaysia context ONLY.
+- Do not invent hotlines/numbers.
+- If uncertain, say "unknown" or "cannot confirm from screenshot".
+- Give practical, urgent steps; keep it safe, non-legal-advice tone.
+
+Reporting channels (Malaysia-only):
+- NSRC hotline: 997 (National Scam Response Centre) for financial scams / transfers.
+- Police (PDRM CCID/JSJK): WhatsApp 013-211 1222; phone 03-2610 1559 / 03-2610 1599
+- Cyber999 (MyCERT): 1-300-88-2999; emergency +6019-266 5850; email cyber999@cybersecurity.my
+- MCMC: 1800-188-030; WhatsApp 016-2206 262; email aduanskmm@mcmc.gov.my; portal aduan.skmm.gov.my
+
+JSON schema to return:
 {{
-  "risk_level": "low|medium|high|critical",
-  "scam_type": "string",
-  "summary": "string",
-  "red_flags": ["string", "..."],
-  "extracted": {{
-    "phones": ["string", "..."],
-    "urls": ["string", "..."],
-    "bank_accounts": ["string", "..."],
-    "names": ["string", "..."],
-    "amounts": ["string", "..."]
+  "as_of": "{AS_OF}",
+  "risk": {{
+    "level": "LOW|MEDIUM|HIGH",
+    "score": 0-100,
+    "confidence": 0.0-1.0
   }},
-  "do_now": ["string", "..."],
-  "dont_do": ["string", "..."],
-  "reporting": {{
-    "urgent_money_moved": [{{"name":"", "type":"", "value":"", "note":""}}],
-    "pdrm_ccid": [{{"name":"", "type":"", "value":"", "note":""}}],
-    "cyber_incident": [{{"name":"", "type":"", "value":"", "note":""}}],
-    "mcmc_content_telco": [{{"name":"", "type":"", "value":"", "note":""}}]
+  "incident": {{
+    "category": "bank_transfer|phishing_link|impersonation|investment|job|parcel|loan|marketplace|unknown",
+    "money_moved": true|false|"unknown",
+    "urgency": "IMMEDIATE|SOON|MONITOR"
   }},
+  "what_i_can_see": {{
+    "short_summary": "string",
+    "extracted": {{
+      "phone_numbers": ["..."],
+      "urls": ["..."],
+      "bank_accounts": ["..."],
+      "platforms": ["WhatsApp","SMS","Telegram","Email","Facebook","Instagram","Shopee","Lazada","TikTok","unknown"],
+      "names_or_orgs": ["..."],
+      "amounts": ["..."]
+    }}
+  }},
+  "red_flags": ["..."],
+  "what_to_do_now": ["..."],
+  "do_not_do": ["..."],
+  "save_as_evidence": ["..."],
+  "recommended_reporting_channels": [
+    {{
+      "id": "NSRC_997|BANK_HOTLINE|CCID_WHATSAPP|CCID_CALL|CYBER999|MCMC",
+      "why": "string"
+    }}
+  ],
   "disclaimer": "string"
 }}
-
-When recommending reporting actions:
-- If money has moved: start with NSRC 997 and bank hotline immediately.
-- Always remind: do not share OTP/TAC/password; banks/authorities will not ask for OTP.
 """
 
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+def _extract_json(text: str):
+    """
+    Best-effort: if model returns extra text, extract the first JSON object.
+    """
+    if not text:
+        return None, "empty model output"
+    text = text.strip()
+
+    # Remove code fences if any
+    text = re.sub(r"^```(json)?", "", text).strip()
+    text = re.sub(r"```$", "", text).strip()
+
+    # Find first {...} block
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not m:
+        return None, "no JSON object found"
+    blob = m.group(0)
+    try:
+        return json.loads(blob), None
+    except Exception as e:
+        return None, f"JSON parse error: {e}"
+
 @app.get("/")
-def home():
-    return "Waspada backend is running ✅", 200
+def root():
+    return jsonify(ok=True, service="waspada-backend", time=_now_iso())
 
 @app.get("/version")
 def version():
+    sha = (
+        os.environ.get("RENDER_GIT_COMMIT")
+        or os.environ.get("GIT_COMMIT")
+        or os.environ.get("COMMIT_SHA")
+        or "unknown"
+    )
     return jsonify(
-        version=APP_VERSION,
-        as_of=AS_OF_DATE,
-        server_time=datetime.utcnow().isoformat() + "Z",
-    ), 200
+        as_of=AS_OF,
+        server_time=_now_iso(),
+        version="dev",
+        sha=sha,
+        has_key=bool(os.environ.get("OPENAI_API_KEY")),
+    )
 
 @app.post("/chat")
 def chat():
@@ -94,7 +119,6 @@ def chat():
 
     if not prompt:
         return jsonify(error="Missing 'prompt'"), 400
-
     if not os.environ.get("OPENAI_API_KEY"):
         return jsonify(error="OPENAI_API_KEY not set on server"), 500
 
@@ -112,40 +136,33 @@ def chat():
 @app.post("/analyze")
 def analyze():
     data = request.get_json(silent=True) or {}
-    image_b64 = (data.get("image_base64") or "").strip()
-    user_note = (data.get("note") or "").strip()
+    img = (data.get("image_base64") or "").strip()
+    note = (data.get("note") or "").strip()
 
-    if not image_b64:
+    if not img:
         return jsonify(error="Missing 'image_base64'"), 400
-
     if not os.environ.get("OPENAI_API_KEY"):
         return jsonify(error="OPENAI_API_KEY not set on server"), 500
 
-    # Guardrails: avoid gigantic payloads
-    if len(image_b64) > 12_000_000:
-        return jsonify(error="Image too large. Please send a smaller screenshot."), 413
-
-    # Accept both raw base64 and data URLs
-    if image_b64.startswith("data:"):
-        data_url = image_b64
+    # Accept either:
+    # - full data URL: data:image/jpeg;base64,....
+    # - raw base64: .....
+    if img.startswith("data:image"):
+        data_url = img
     else:
-        data_url = f"data:image/jpeg;base64,{image_b64}"
+        data_url = f"data:image/jpeg;base64,{img}"
 
     user_prompt = f"""
-Analyse this screenshot for scam signals and give Malaysia-only guidance.
-
-User note (optional):
-{user_note}
-
-You MUST use ONLY these reporting channels:
-
-{MALAYSIA_CHANNELS}
+Analyze this screenshot for scam signals. Use Malaysia context only.
+User note (optional): {note if note else "(none)"}
+Return strict JSON with the required schema.
 """
 
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0.2,
+            max_tokens=900,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
@@ -158,13 +175,13 @@ You MUST use ONLY these reporting channels:
             ],
         )
         out = (resp.choices[0].message.content or "").strip()
-
-        # We expect strict JSON; if the model returns extra text, fail loudly
-        if not out.startswith("{"):
-            return jsonify(error="Model did not return JSON", raw=out), 502
-
-        return jsonify(result=out), 200
+        parsed, err = _extract_json(out)
+        if err:
+            return jsonify(error="Model did not return valid JSON", detail=err, raw=out), 502
+        return jsonify(result=parsed), 200
 
     except Exception as e:
         return jsonify(error=str(e)), 500
 
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
