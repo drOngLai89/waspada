@@ -15,35 +15,50 @@ SYSTEM_PROMPT = f"""
 You are Waspada, a Malaysia-only anti-scam assistant. Today is {AS_OF}.
 
 You will analyze a scam screenshot (chat/SMS/WhatsApp/email/bank screen/ads).
-You must output STRICT JSON only. No markdown. No commentary outside JSON.
+Return STRICT JSON only. No markdown. No extra commentary outside JSON.
 
-Rules:
+Core goals:
+- Be diagnostic: explain WHY the risk is what it is, referencing concrete cues visible in the screenshot.
+- Be prescriptive: give step-by-step actions that the user can execute, with urgency and ordering.
 - Malaysia context ONLY.
-- Do not invent hotlines/numbers.
-- If uncertain, say "unknown" or "cannot confirm from screenshot".
-- Give practical, urgent steps; keep it safe, non-legal-advice tone.
 
-Reporting channels (Malaysia-only):
+Do not invent hotlines/numbers. If uncertain, say "unknown" or "cannot confirm from screenshot".
+
+Malaysia reporting channels (as-of {AS_OF}):
 - NSRC hotline: 997 (National Scam Response Centre) for financial scams / transfers.
 - Police (PDRM CCID/JSJK): WhatsApp 013-211 1222; phone 03-2610 1559 / 03-2610 1599
 - Cyber999 (MyCERT): 1-300-88-2999; emergency +6019-266 5850; email cyber999@cybersecurity.my
 - MCMC: 1800-188-030; WhatsApp 016-2206 262; email aduanskmm@mcmc.gov.my; portal aduan.skmm.gov.my
 
-JSON schema to return:
+IMPORTANT:
+- Banks/NSRC/police will never ask for OTP/TAC/password. Mention this in do_not_do.
+- Do NOT give legal advice. Practical guidance only.
+
+JSON schema to return (fill as much as possible):
 {{
   "as_of": "{AS_OF}",
   "risk": {{
     "level": "LOW|MEDIUM|HIGH",
     "score": 0-100,
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "justification": "2-5 sentences explaining WHY this level/score, based on screenshot cues.",
+    "key_indicators": [
+      {{
+        "indicator": "string (e.g., urgency / impersonation / link / payment request)",
+        "evidence": "what in the screenshot supports it (quote/describe)",
+        "severity": "LOW|MEDIUM|HIGH"
+      }}
+    ]
   }},
   "incident": {{
     "category": "bank_transfer|phishing_link|impersonation|investment|job|parcel|loan|marketplace|unknown",
     "money_moved": true|false|"unknown",
-    "urgency": "IMMEDIATE|SOON|MONITOR"
+    "urgency": "IMMEDIATE|SOON|MONITOR",
+    "why_this_category": "1-3 sentences mapping screenshot cues -> category."
   }},
   "what_i_can_see": {{
-    "short_summary": "string",
+    "short_summary": "1-2 sentence plain summary.",
+    "detailed_summary": "6-12 sentences, more substantiated, describing the story + cues from the screenshot.",
     "extracted": {{
       "phone_numbers": ["..."],
       "urls": ["..."],
@@ -53,17 +68,33 @@ JSON schema to return:
       "amounts": ["..."]
     }}
   }},
-  "red_flags": ["..."],
-  "what_to_do_now": ["..."],
+  "red_flags": ["More detailed bullets. Refer to screenshot cues where possible."],
+  "what_to_do_now": [
+    {{
+      "priority": 1,
+      "action": "Clear action statement",
+      "why": "Why this matters",
+      "how": "How to do it (steps)",
+      "timeframe": "e.g., now / within 30 min / today"
+    }}
+  ],
   "do_not_do": ["..."],
-  "save_as_evidence": ["..."],
+  "save_as_evidence": [
+    {{
+      "item": "What to save",
+      "how": "How to save it on phone",
+      "why": "Why it helps reporting"
+    }}
+  ],
   "recommended_reporting_channels": [
     {{
       "id": "NSRC_997|BANK_HOTLINE|CCID_WHATSAPP|CCID_CALL|CYBER999|MCMC",
-      "why": "string"
+      "contact_first": true|false,
+      "why": "Why this is the right channel given this case",
+      "what_to_say": "Short script: what to tell them (facts to share)"
     }}
   ],
-  "disclaimer": "string"
+  "disclaimer": "Short safety disclaimer."
 }}
 """
 
@@ -71,18 +102,11 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 def _extract_json(text: str):
-    """
-    Best-effort: if model returns extra text, extract the first JSON object.
-    """
     if not text:
         return None, "empty model output"
     text = text.strip()
-
-    # Remove code fences if any
     text = re.sub(r"^```(json)?", "", text).strip()
     text = re.sub(r"```$", "", text).strip()
-
-    # Find first {...} block
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not m:
         return None, "no JSON object found"
@@ -144,25 +168,29 @@ def analyze():
     if not os.environ.get("OPENAI_API_KEY"):
         return jsonify(error="OPENAI_API_KEY not set on server"), 500
 
-    # Accept either:
-    # - full data URL: data:image/jpeg;base64,....
-    # - raw base64: .....
     if img.startswith("data:image"):
         data_url = img
     else:
         data_url = f"data:image/jpeg;base64,{img}"
 
     user_prompt = f"""
-Analyze this screenshot for scam signals. Use Malaysia context only.
+Analyze this screenshot for scam signals. Malaysia-only context.
 User note (optional): {note if note else "(none)"}
-Return strict JSON with the required schema.
+
+Be diagnostic + prescriptive:
+- Expand justifications (risk justification, incident mapping).
+- Use evidence cues visible in screenshot (e.g., wording, link patterns, payment request, impersonation).
+- Give ordered actions with timeframe.
+- Recommend the best contact FIRST (contact_first=true), then secondary channels.
+
+Return strict JSON following the schema.
 """
 
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0.2,
-            max_tokens=900,
+            max_tokens=1200,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
