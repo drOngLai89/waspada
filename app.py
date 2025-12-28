@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -8,42 +9,33 @@ from openai import OpenAI
 app = Flask(__name__)
 CORS(app)
 
-client = OpenAI()
+# Slightly longer client-side timeout helps too (Render timeout is separate)
+client = OpenAI(timeout=90.0)
 
 AS_OF = "27 Dec 2025"
 
 
 def extract_json_anywhere(text: str):
-    """
-    Robust JSON extractor:
-    - Handles ```json fenced blocks
-    - Handles extra text before/after
-    - Extracts first { ... last } and parses
-    """
     if not text:
         return None
     t = text.strip()
 
-    # Remove triple-backtick fences if present
+    # Strip ``` fences if present
     if t.startswith("```"):
-        # Remove first fence line like ```json or ```
         lines = t.splitlines()
         if lines:
             lines = lines[1:]
-        # Remove ending ``` if present
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         t = "\n".join(lines).strip()
-
-        # If it starts with "json" line, remove it
         if t.lower().startswith("json"):
             t = t[4:].strip()
 
-    # Now locate first JSON object
     a = t.find("{")
     b = t.rfind("}")
     if a == -1 or b == -1 or b <= a:
         return None
+
     candidate = t[a:b + 1].strip()
     try:
         return json.loads(candidate)
@@ -56,31 +48,8 @@ def version():
     return jsonify(
         as_of=AS_OF,
         server_time=datetime.datetime.utcnow().isoformat() + "Z",
-        version="dev"
-    )
-
-
-@app.post("/chat")
-def chat():
-    data = request.get_json(silent=True) or {}
-    prompt = (data.get("prompt") or "").strip()
-
-    if not prompt:
-        return jsonify(error="Missing 'prompt'"), 400
-
-    if not os.environ.get("OPENAI_API_KEY"):
-        return jsonify(error="OPENAI_API_KEY not set on server"), 500
-
-    try:
-        resp = client.chat.completions.create(
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        return jsonify(output=text), 200
-    except Exception as e:
-        return jsonify(error=str(e)), 500
+        version="dev",
+    ), 200
 
 
 @app.post("/analyze")
@@ -96,13 +65,11 @@ def analyze():
     if not os.environ.get("OPENAI_API_KEY"):
         return jsonify(error="OPENAI_API_KEY not set on server"), 500
 
-    # accept data URL or raw base64
     if image_base64.startswith("data:"):
         data_url = image_base64
     else:
         data_url = f"data:image/jpeg;base64,{image_base64}"
 
-    # Malaysia channels (basic now; frontend can show + recommend later)
     channels = [
         {"id": "nsrc_997", "title": "NSRC Hotline", "value": "997", "type": "call", "note": "If money already moved, call 997 immediately."},
         {"id": "ccid_whatsapp", "title": "CCID WhatsApp", "value": "+60132111222", "type": "whatsapp", "note": "Send details/screenshots via WhatsApp if needed."},
@@ -112,14 +79,10 @@ def analyze():
         {"id": "mcmc", "title": "MCMC Aduan", "value": "https://aduan.skmm.gov.my", "type": "url", "note": "Report scam ads / harmful online content."},
     ]
 
-    # IMPORTANT: tell the model to return RAW JSON ONLY (no fences)
     system = f"""
 You are Waspada, a Malaysia-only scam screenshot assistant.
-Return ONLY valid JSON. No backticks. No markdown. No extra text.
-Be diagnostic and prescriptive:
-- Explain what you see in the screenshot (only what is visible).
-- Explain why each visible signal is risky.
-- Give clear steps what to do now, in Malaysia context.
+Return ONLY valid JSON. No markdown. No backticks. No extra text.
+Be diagnostic and prescriptive. Explain what you can see in the image and why it is risky.
 Language: {lang} (en/ms/zh/ta). Use that language in all fields.
 """.strip()
 
@@ -147,35 +110,65 @@ Return JSON with this shape:
 }}
 
 Rules:
-- Provide at least 5 what_ai_sees items based on the screenshot.
-- Provide 6-10 what_to_do_now steps, ordered, Malaysia-specific.
+- Provide at least 5 what_ai_sees items based on the screenshot (not the note).
+- Provide 6-10 what_to_do_now steps, ordered.
 - recommended_contact.primary.id must be one of the ids listed above.
 """.strip()
+
+    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+    last_err = None
+    for attempt in range(1, 4):  # 3 tries
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    },
+                ],
+            )
+            out = (resp.choices[0].message.content or "").strip()
+            obj = extract_json_anywhere(out)
+
+            if not isinstance(obj, dict):
+                return jsonify(error="Model did not return JSON", raw=out[:2000]), 502
+
+            return jsonify(result=obj, channels=channels), 200
+
+        except Exception as e:
+            last_err = str(e)
+            # short backoff and retry
+            time.sleep(0.6 * attempt)
+
+    return jsonify(error="Upstream error (OpenAI/timeout). Try again.", detail=last_err), 502
+
+
+@app.post("/chat")
+def chat():
+    data = request.get_json(silent=True) or {}
+    prompt = (data.get("prompt") or "").strip()
+
+    if not prompt:
+        return jsonify(error="Missing 'prompt'"), 400
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        return jsonify(error="OPENAI_API_KEY not set on server"), 500
 
     try:
         resp = client.chat.completions.create(
             model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            messages=[
-                {"role": "system", "content": system},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                },
-            ],
         )
-        out = (resp.choices[0].message.content or "").strip()
-
-        # ✅ Robust parse (handles ```json fences and extra text)
-        obj = extract_json_anywhere(out)
-        if not isinstance(obj, dict):
-            return jsonify(error="Model did not return JSON", raw=out[:2000]), 502
-
-        return jsonify(result=obj, channels=channels), 200
-
+        text = (resp.choices[0].message.content or "").strip()
+        return jsonify(output=text), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
 
