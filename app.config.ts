@@ -1,37 +1,43 @@
-import { ConfigContext, ExpoConfig } from "@expo/config";
+import { ExpoConfig } from "expo/config";
 
-export default ({ config }: ConfigContext): ExpoConfig => ({
-  name: "Berani",
-  slug: "berani",
-  scheme: "berani",
+const config: ExpoConfig = {
+  name: "Waspada",
+  slug: "waspada",
   version: "1.0.0",
-  orientation: "portrait",
   icon: "./assets/icon.png",
+  runtimeVersion: { policy: "sdkVersion" },
+  orientation: "portrait",
   userInterfaceStyle: "automatic",
-  splash: {
-    image: "./assets/splash.png",
-    resizeMode: "contain",
-    backgroundColor: "#ffffff"
-  },
-  assetBundlePatterns: ["**/*"],
+
   ios: {
-    bundleIdentifier: "com.drsherman.berani",
-    supportsTablet: false,
-    icon: "./assets/icon.png",
+    bundleIdentifier: "com.drshermankoh.waspada",
+    buildNumber: "3",
+    supportsTablet: true,
     infoPlist: {
-      NSCameraUsageDescription: "Berani needs camera access to capture photos as evidence for your reports.",
-      NSPhotoLibraryUsageDescription: "Berani needs photo library access to attach evidence photos to your reports.",
-      NSPhotoLibraryAddUsageDescription: "Berani may save exports to your photo library if you choose to share.",
-      ITSAppUsesNonExemptEncryption: false
+      NSCameraUsageDescription: "Waspada uses the camera so you can capture screenshots for analysis.",
+      NSPhotoLibraryAddUsageDescription: "Waspada may save processed images you attach to your reports.",
+      NSPhotoLibraryUsageDescription: "Waspada needs photo access to let you attach screenshots to reports."
     }
   },
+
   android: {
-    package: "com.drsherman.berani",
-    adaptiveIcon: { foregroundImage: "./assets/icon.png", backgroundColor: "#0b2943" },
-    permissions: []
+    package: "com.drsherman.waspada",
+    versionCode: 1,
+    adaptiveIcon: {
+      foregroundImage: "./assets/icon.png",
+      backgroundColor: "#0B2E4A"
+    }
   },
+
   extra: {
-    API_BASE_URL: process.env.API_BASE_URL,
-    eas: { projectId: "ea4d8f65-62de-4361-ab6d-37952c73e0f1" }
-  }
-});
+    eas: { projectId: "1cbd19f5-cc40-43bf-bdf2-4ba451ff66a6" },
+    env: "prod",
+    // CHANGE THIS to your Waspada backend if different:
+    apiBaseUrl: "https://waspada.onrender.com",
+    API_BASE_URL: "https://waspada.onrender.com",},
+
+  plugins: ["expo-router"],
+  experiments: { typedRoutes: true }
+};
+
+export default config;

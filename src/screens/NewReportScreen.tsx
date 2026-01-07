@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity, Platform,
-  Image, Alert, Share, Modal, ActivityIndicator
+  Image, Alert, Share, Modal, ActivityIndicator, KeyboardAvoidingView
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -10,6 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { generateReport } from '../utils/api';
 
 const categories = [
@@ -43,6 +44,8 @@ function Pill({ children, onPress, disabled }:{
 }
 
 export default function NewReportScreen() {
+  const insets = useSafeAreaInsets();
+
   const [category, setCategory] = useState(categories[0]);
   const [date, setDate] = useState<Date>(new Date());
   const [time, setTime] = useState<Date>(new Date());
@@ -210,96 +213,111 @@ h1{margin:0 0 10px;font-size:22px} h2{margin:18px 0 8px;font-size:17px}
   }
 
   return (
-    <ScrollView style={{ flex:1, backgroundColor:'#0B1226' }} contentContainerStyle={{ padding:16, paddingBottom:40 }}>
-      {/* Header removed as requested */}
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: '#0B1226' }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      // If you re-enable a nav header later, bump this (e.g., 64–88)
+      keyboardVerticalOffset={Platform.OS === 'ios' ? Math.max(0, insets.top) : 0}
+    >
+      <ScrollView
+        style={{ flex:1 }}
+        contentContainerStyle={{ padding:16, paddingBottom: 40 + insets.bottom }}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        contentInsetAdjustmentBehavior="always"
+      >
+        {/* Header removed as requested */}
 
-      <Text style={{ color:'#C9D7F3', fontWeight:'700', marginBottom:6 }}>Category</Text>
-      <View style={{ backgroundColor:'#111830', borderRadius:16, borderWidth:1, borderColor:'#1E2A4A', overflow:'hidden', marginBottom:12 }}>
-        <Picker
-          selectedValue={category}
-          onValueChange={(v) => setCategory(String(v))}
-          dropdownIconColor="#E8ECF3"
-          style={{ color:'#E8ECF3' }}
-          itemStyle={{ color:'#E8ECF3' }}
-          mode={Platform.OS === 'android' ? 'dropdown' : undefined}
-        >
-          {categories.map(c => <Picker.Item key={c} label={c} value={c} />)}
-        </Picker>
-      </View>
-
-      <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
-        <Text style={{ color:'#C9D7F3', fontWeight:'700', marginBottom:6 }}>Date</Text>
-        <Text style={{ color:'#C9D7F3', fontWeight:'700', marginBottom:6 }}>Time</Text>
-      </View>
-      <View style={{ flexDirection:'row', gap:14, marginBottom:8 }}>
-        <View style={{ flex:1 }}>
-          <Pill onPress={() => { Platform.OS === 'ios' ? setIosSheet('date') : setShowDateA(true); }}>{dateLabel}</Pill>
+        <Text style={{ color:'#C9D7F3', fontWeight:'700', marginBottom:6 }}>Category</Text>
+        <View style={{ backgroundColor:'#111830', borderRadius:16, borderWidth:1, borderColor:'#1E2A4A', overflow:'hidden', marginBottom:12 }}>
+          <Picker
+            selectedValue={category}
+            onValueChange={(v) => setCategory(String(v))}
+            dropdownIconColor="#E8ECF3"
+            style={{ color:'#E8ECF3' }}
+            itemStyle={{ color:'#E8ECF3' }}
+            mode={Platform.OS === 'android' ? 'dropdown' : undefined}
+          >
+            {categories.map(c => <Picker.Item key={c} label={c} value={c} />)}
+          </Picker>
         </View>
-        <View style={{ width:160 }}>
-          <Pill onPress={() => { Platform.OS === 'ios' ? setIosSheet('time') : setShowTimeA(true); }}>{timeLabel}</Pill>
+
+        <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+          <Text style={{ color:'#C9D7F3', fontWeight:'700', marginBottom:6 }}>Date</Text>
+          <Text style={{ color:'#C9D7F3', fontWeight:'700', marginBottom:6 }}>Time</Text>
         </View>
-      </View>
-
-      {Platform.OS === 'android' && showDateA && <DateTimePicker value={date} mode="date" display="default" onChange={onChangeDateAndroid} />}
-      {Platform.OS === 'android' && showTimeA && <DateTimePicker value={time} mode="time" is24Hour={false} display="default" onChange={onChangeTimeAndroid} />}
-      {Platform.OS === 'ios' && iosSheet === 'date' && <IOSPickerSheet mode="date" onClose={() => setIosSheet(null)} />}
-      {Platform.OS === 'ios' && iosSheet === 'time' && <IOSPickerSheet mode="time" onClose={() => setIosSheet(null)} />}
-
-      <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:12, marginBottom:6 }}>Location</Text>
-      <View style={{ flexDirection:'row', gap:10 }}>
-        <TextInput
-          value={locationText}
-          onChangeText={setLocationText}
-          placeholder="Enter a place or address"
-          placeholderTextColor="#6E7AA3"
-          style={{ flex:1, backgroundColor:'#111830', color:'#E8ECF3', borderRadius:12, paddingHorizontal:14, paddingVertical:12, borderWidth:1, borderColor:'#1E2A4A' }}
-        />
-      </View>
-
-      <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:16, marginBottom:6 }}>Description</Text>
-      <TextInput
-        value={description}
-        onChangeText={setDescription}
-        multiline
-        placeholder="Describe what happened…"
-        placeholderTextColor="#6E7AA3"
-        style={{ minHeight:120, textAlignVertical:'top', backgroundColor:'#111830', color:'#E8ECF3', borderRadius:12, padding:14, borderWidth:1, borderColor:'#1E2A4A' }}
-      />
-
-      <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:16, marginBottom:6 }}>Photos</Text>
-      <View style={{ flexDirection:'row', alignItems:'center', gap:14, flexWrap:'wrap' }}>
-        <TouchableOpacity onPress={onAddPhoto} style={{ backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingHorizontal:18, paddingVertical:14, borderRadius:12 }}>
-          <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Add photo</Text>
-        </TouchableOpacity>
-        {photos.map((uri, idx) => (
-          <View key={uri} style={{ position:'relative' }}>
-            <Image source={{ uri }} style={{ width:132, height:132, borderRadius:10 }} />
-            <TouchableOpacity onPress={() => removePhoto(idx)} style={{ position:'absolute', top:-8, right:-8, backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, borderRadius:12, paddingHorizontal:8, paddingVertical:4 }}>
-              <Text style={{ color:'#E8ECF3', fontWeight:'800' }}>×</Text>
-            </TouchableOpacity>
+        <View style={{ flexDirection:'row', gap:14, marginBottom:8 }}>
+          <View style={{ flex:1 }}>
+            <Pill onPress={() => { Platform.OS === 'ios' ? setIosSheet('date') : setShowDateA(true); }}>{dateLabel}</Pill>
           </View>
-        ))}
-      </View>
+          <View style={{ width:160 }}>
+            <Pill onPress={() => { Platform.OS === 'ios' ? setIosSheet('time') : setShowTimeA(true); }}>{timeLabel}</Pill>
+          </View>
+        </View>
 
-      <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:18, marginBottom:8 }}>AI Report</Text>
-      <TouchableOpacity onPress={onGenerate} disabled={isGen} style={{ backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingVertical:14, borderRadius:12, alignItems:'center', marginBottom:10, opacity: isGen ? 0.6 : 1 }}>
-        {isGen ? <ActivityIndicator /> : <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Generate</Text>}
-      </TouchableOpacity>
+        {Platform.OS === 'android' && showDateA && <DateTimePicker value={date} mode="date" display="default" onChange={onChangeDateAndroid} />}
+        {Platform.OS === 'android' && showTimeA && <DateTimePicker value={time} mode="time" is24Hour={false} display="default" onChange={onChangeTimeAndroid} />}
+        {Platform.OS === 'ios' && iosSheet === 'date' && <IOSPickerSheet mode="date" onClose={() => setIosSheet(null)} />}
+        {Platform.OS === 'ios' && iosSheet === 'time' && <IOSPickerSheet mode="time" onClose={() => setIosSheet(null)} />}
 
-      <View style={{ backgroundColor:'#111830', borderColor:'#1E2A4A', borderWidth:1, borderRadius:12, padding:14, minHeight:120 }}>
-        <Text style={{ color:'#A8B7D9', lineHeight:22 }}>{aiText}</Text>
-      </View>
+        <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:12, marginBottom:6 }}>Location</Text>
+        <View style={{ flexDirection:'row', gap:10 }}>
+          <TextInput
+            value={locationText}
+            onChangeText={setLocationText}
+            placeholder="Enter a place or address"
+            placeholderTextColor="#6E7AA3"
+            style={{ flex:1, backgroundColor:'#111830', color:'#E8ECF3', borderRadius:12, paddingHorizontal:14, paddingVertical:12, borderWidth:1, borderColor:'#1E2A4A' }}
+            returnKeyType="done"
+          />
+        </View>
 
-      <View style={{ flexDirection:'row', gap:14, marginTop:16 }}>
-        <TouchableOpacity onPress={onShare} style={{ flex:1, backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingVertical:14, borderRadius:12, alignItems:'center' }}>
-          <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Share</Text>
+        <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:16, marginBottom:6 }}>Description</Text>
+        <TextInput
+          value={description}
+          onChangeText={setDescription}
+          multiline
+          placeholder="Describe what happened…"
+          placeholderTextColor="#6E7AA3"
+          style={{ minHeight:120, textAlignVertical:'top', backgroundColor:'#111830', color:'#E8ECF3', borderRadius:12, padding:14, borderWidth:1, borderColor:'#1E2A4A' }}
+          blurOnSubmit={false}
+        />
+
+        <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:16, marginBottom:6 }}>Photos</Text>
+        <View style={{ flexDirection:'row', alignItems:'center', gap:14, flexWrap:'wrap' }}>
+          <TouchableOpacity onPress={onAddPhoto} style={{ backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingHorizontal:18, paddingVertical:14, borderRadius:12 }}>
+            <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Add photo</Text>
+          </TouchableOpacity>
+          {photos.map((uri, idx) => (
+            <View key={uri} style={{ position:'relative' }}>
+              <Image source={{ uri }} style={{ width:132, height:132, borderRadius:10 }} />
+              <TouchableOpacity onPress={() => removePhoto(idx)} style={{ position:'absolute', top:-8, right:-8, backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, borderRadius:12, paddingHorizontal:8, paddingVertical:4 }}>
+                <Text style={{ color:'#E8ECF3', fontWeight:'800' }}>×</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+
+        <Text style={{ color:'#C9D7F3', fontWeight:'700', marginTop:18, marginBottom:8 }}>AI Report</Text>
+        <TouchableOpacity onPress={onGenerate} disabled={isGen} style={{ backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingVertical:14, borderRadius:12, alignItems:'center', marginBottom:10, opacity: isGen ? 0.6 : 1 }}>
+          {isGen ? <ActivityIndicator /> : <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Generate</Text>}
         </TouchableOpacity>
-        <TouchableOpacity onPress={onSaveToVault} style={{ flex:1, backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingVertical:14, borderRadius:12, alignItems:'center' }}>
-          <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Save to Vault</Text>
-        </TouchableOpacity>
-      </View>
 
-      <View style={{ height: 40 }} />
-    </ScrollView>
+        <View style={{ backgroundColor:'#111830', borderColor:'#1E2A4A', borderWidth:1, borderRadius:12, padding:14, minHeight:120 }}>
+          <Text style={{ color:'#A8B7D9', lineHeight:22 }}>{aiText}</Text>
+        </View>
+
+        <View style={{ flexDirection:'row', gap:14, marginTop:16 }}>
+          <TouchableOpacity onPress={onShare} style={{ flex:1, backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingVertical:14, borderRadius:12, alignItems:'center' }}>
+            <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Share</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onSaveToVault} style={{ flex:1, backgroundColor:'#1B2340', borderColor:'#2B3963', borderWidth:1, paddingVertical:14, borderRadius:12, alignItems:'center' }}>
+            <Text style={{ color:'#E8ECF3', fontWeight:'700' }}>Save to Vault</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
