@@ -132,27 +132,30 @@ Be calm, non-judgemental. Focus on safety. No legal claims.
     try:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Use Chat Completions (compatible with openai==1.57.4)
-        resp = client.chat.completions.create(
+        # Responses API (best support for vision + modern models)
+        resp = client.responses.create(
             model=MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
+            input=[
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": user_text},
-                        {"type": "image_url", "image_url": {"url": req.image_data_url}},
+                        {"type": "input_text", "text": user_text},
+                        {"type": "input_image", "image_url": req.image_data_url},
                     ],
                 },
             ],
-            max_tokens=900,
+            max_output_tokens=900,
         )
 
-        text = (resp.choices[0].message.content or "").strip()
+        text = (resp.output_text or "").strip()
         if not text:
             raise ValueError("empty_model_output")
 
-        # Parse JSON strictly; if it fails, return a safe fallback + truncated raw output
+        # Parse JSON strictly; fallback if model misbehaves
         try:
             data = json.loads(text)
             return {"result": {"lang": lang, **data}}
@@ -161,7 +164,7 @@ Be calm, non-judgemental. Focus on safety. No legal claims.
                 "result": {
                     "lang": lang,
                     "risk_level": "MEDIUM",
-                    "summary": "Could not parse model output as JSON. Please try again.",
+                    "summary": "Could not parse AI output as JSON. Please try again.",
                     "what_looks_suspicious": [],
                     "missing_info_to_confirm": [],
                     "safe_next_steps_malaysia": [
@@ -190,7 +193,15 @@ Be calm, non-judgemental. Focus on safety. No legal claims.
     except APIConnectionError:
         raise HTTPException(status_code=502, detail="OPENAI_CONNECTION_ERROR. Upstream network issue, try again.")
     except APIStatusError as e:
-        raise HTTPException(status_code=502, detail=f"OPENAI_STATUS_ERROR: {getattr(e, 'status_code', 'unknown')}")
+        # Try to surface the OpenAI error message cleanly
+        msg = "OPENAI_STATUS_ERROR"
+        try:
+            body = e.response.json()
+            if isinstance(body, dict) and "error" in body and isinstance(body["error"], dict):
+                msg = body["error"].get("message", msg)
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail=f"OPENAI_400/500: {msg}")
     except Exception as e:
         log.exception("Analyze failed")
         raise HTTPException(status_code=500, detail=f"AI service error: {str(e)[:180]}")
