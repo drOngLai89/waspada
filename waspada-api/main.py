@@ -33,7 +33,6 @@ def norm_lang(raw: str) -> str:
     s = raw.strip()
     s_low = s.lower()
 
-    # Accept common aliases
     if s_low in ("en", "eng", "english"):
         return "EN"
     if s_low in ("ms", "bm", "malay", "bahasa", "bahasamelayu"):
@@ -51,6 +50,10 @@ def norm_lang(raw: str) -> str:
 class AnalyzeReq(BaseModel):
     image_data_url: str = Field(..., alias="image_data_url")
     lang: str = "EN"
+
+@app.get("/")
+def root():
+    return {"ok": True, "service": "waspada-api", "hint": "Use /version or /analyze"}
 
 @app.get("/version")
 def version():
@@ -70,7 +73,6 @@ def analyze(req: AnalyzeReq) -> Dict[str, Any]:
     if not req.image_data_url or not req.image_data_url.startswith("data:image"):
         raise HTTPException(status_code=422, detail="image_data_url must be a data URL starting with data:image/...")
 
-    # Malaysia-first system prompt (safe, practical, non-panicky)
     system_prompt = f"""
 You are Waspada, an anti-scam assistant for Malaysia.
 You will review ONE screenshot (chat, SMS, WhatsApp, bank screen, marketplace, etc) and produce safe, practical guidance.
@@ -131,23 +133,17 @@ Be calm, non-judgemental. No legal claims. No accusations. Focus on safety.
         if not text:
             raise ValueError("Empty response from model")
 
-        # Validate JSON
         data = json.loads(text)
         return {"result": {"lang": lang, **data}}
 
     except Exception as e:
-        # Don’t leak secrets or raw upstream messages to the app.
         msg = str(e)
         log.exception("Analyze failed")
 
-        # Detect common OpenAI auth failure without echoing key fragments
         if "invalid_api_key" in msg or "Incorrect API key" in msg or "Error code: 401" in msg:
             raise HTTPException(
                 status_code=500,
                 detail="AI service authentication failed. Check OPENAI_API_KEY on Render (must start with sk-), then redeploy.",
             )
 
-        raise HTTPException(
-            status_code=500,
-            detail="AI service error. Please try again in a moment.",
-        )
+        raise HTTPException(status_code=500, detail="AI service error. Please try again in a moment.")
