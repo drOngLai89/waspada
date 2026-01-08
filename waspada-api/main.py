@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import hashlib
 import logging
 from typing import Any, Dict
 
@@ -8,10 +9,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from openai import OpenAI
+from openai import AuthenticationError, APIConnectionError, RateLimitError, APIStatusError
 
 START_TS = time.time()
-log = logging.getLogger("waspada-api")
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("waspada-api")
 
 app = FastAPI(title="waspada-api")
 
@@ -26,6 +28,16 @@ def key_present() -> bool:
 def key_format_ok() -> bool:
     k = os.getenv("OPENAI_API_KEY", "")
     return k.startswith("sk-") and len(k) >= 20
+
+def key_fingerprint() -> str:
+    """
+    Safe fingerprint so you can verify Render is using the intended key,
+    without ever printing the key.
+    """
+    k = os.getenv("OPENAI_API_KEY", "")
+    if not k:
+        return ""
+    return hashlib.sha256(k.encode("utf-8")).hexdigest()[:8]
 
 def norm_lang(raw: str) -> str:
     if not raw:
@@ -63,6 +75,7 @@ def version():
         "uptime_s": uptime_s(),
         "has_key": key_present(),
         "key_format_ok": key_format_ok(),
+        "key_fp": key_fingerprint(),
         "model": MODEL,
     }
 
@@ -75,7 +88,7 @@ def analyze(req: AnalyzeReq) -> Dict[str, Any]:
 
     system_prompt = f"""
 You are Waspada, an anti-scam assistant for Malaysia.
-You will review ONE screenshot (chat, SMS, WhatsApp, bank screen, marketplace, etc) and produce safe, practical guidance.
+You will review ONE screenshot and produce safe, practical guidance.
 
 Return STRICT JSON only (no markdown), matching this schema:
 
@@ -94,25 +107,26 @@ Return STRICT JSON only (no markdown), matching this schema:
   "official_resources": [
     {{"name":"NSRC 997 (Malaysia)","note":"If funds transferred or in-progress scam"}},
     {{"name":"Semak Mule (PDRM CCID)","url":"https://semakmule.rmp.gov.my"}},
-    {{"name":"BNMTELELINK","value":"1-300-88-5465","note":"Bank Negara Malaysia general guidance"}},
+    {{"name":"BNMTELELINK","value":"1-300-88-5465","note":"Bank Negara Malaysia guidance"}},
     {{"name":"MyCERT","url":"https://www.mycert.org.my","note":"Cyber incident guidance"}}
   ],
   "confidence": 0.0
 }}
 
 Language requirement:
-- If lang == "EN": respond in English.
-- If lang == "MS": respond in Bahasa Melayu.
-- If lang == "ZH": respond in Simplified Chinese.
-- If lang == "TA": respond in Tamil (simple, clear).
+- EN: English
+- MS: Bahasa Melayu
+- ZH: Simplified Chinese
+- TA: Tamil (simple)
 
-Be calm, non-judgemental. No legal claims. No accusations. Focus on safety.
+Be calm, non-judgemental. Focus on safety. No legal claims.
 """.strip()
 
-    user_text = f"Analyse this screenshot for scam signs. lang={lang}. Return JSON only."
+    user_text = f"Analyse this screenshot for scam signs in Malaysia. lang={lang}. Return JSON only."
 
     try:
-        client = OpenAI()
+        # Explicitly pass key to avoid any env confusion
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         resp = client.responses.create(
             model=MODEL,
@@ -131,19 +145,47 @@ Be calm, non-judgemental. No legal claims. No accusations. Focus on safety.
 
         text = (resp.output_text or "").strip()
         if not text:
-            raise ValueError("Empty response from model")
+            raise ValueError("empty_model_output")
 
-        data = json.loads(text)
+        # Hard-parse JSON (but if it fails, return a truncated raw output to debug)
+        try:
+            data = json.loads(text)
+        except Exception:
+            return {
+                "result": {
+                    "lang": lang,
+                    "risk_level": "MEDIUM",
+                    "summary": "Could not parse model output as JSON. Please try again.",
+                    "what_looks_suspicious": [],
+                    "missing_info_to_confirm": [],
+                    "safe_next_steps_malaysia": [
+                        "If money already moved: call NSRC 997 immediately.",
+                        "Call your bank ASAP and request to freeze/recall the transfer.",
+                        "Keep evidence: screenshots, phone numbers, account numbers, chat logs.",
+                    ],
+                    "official_resources": [
+                        {"name": "NSRC 997 (Malaysia)", "note": "If funds transferred or in-progress scam"},
+                        {"name": "Semak Mule (PDRM CCID)", "url": "https://semakmule.rmp.gov.my"},
+                    ],
+                    "confidence": 0.2,
+                    "_debug_raw_model_output": text[:400],
+                }
+            }
+
         return {"result": {"lang": lang, **data}}
 
+    except AuthenticationError:
+        # This means OpenAI rejected the key (revoked/typo/wrong account)
+        raise HTTPException(
+            status_code=500,
+            detail=f"OPENAI_AUTH_FAILED (key_fp={key_fingerprint()}). Re-check OPENAI_API_KEY in Render, save, and redeploy.",
+        )
+    except RateLimitError:
+        raise HTTPException(status_code=503, detail="OPENAI_RATE_LIMIT. Try again in a minute.")
+    except APIConnectionError:
+        raise HTTPException(status_code=502, detail="OPENAI_CONNECTION_ERROR. Upstream network issue, try again.")
+    except APIStatusError as e:
+        raise HTTPException(status_code=502, detail=f"OPENAI_STATUS_ERROR: {getattr(e, 'status_code', 'unknown')}")
     except Exception as e:
-        msg = str(e)
         log.exception("Analyze failed")
-
-        if "invalid_api_key" in msg or "Incorrect API key" in msg or "Error code: 401" in msg:
-            raise HTTPException(
-                status_code=500,
-                detail="AI service authentication failed. Check OPENAI_API_KEY on Render (must start with sk-), then redeploy.",
-            )
-
-        raise HTTPException(status_code=500, detail="AI service error. Please try again in a moment.")
+        raise HTTPException(status_code=500, detail=f"AI service error: {str(e)[:180]}")
