@@ -1,149 +1,156 @@
 import os
-import time
 import json
-import hashlib
+import time
 import logging
-from typing import Any, Dict
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from openai import OpenAI
-from openai import AuthenticationError, APIConnectionError, RateLimitError, APIStatusError
 
+log = logging.getLogger("uvicorn.error")
+
+app = FastAPI(title="waspada-api", version="2.0")
+
+SERVICE_NAME = "waspada-api"
 START_TS = time.time()
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("waspada-api")
 
-app = FastAPI(title="waspada-api")
+DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# ---- helpers ----
 
+def _has_key() -> bool:
+    return bool(OPENAI_API_KEY and OPENAI_API_KEY.strip())
 
-def uptime_s() -> int:
-    return int(time.time() - START_TS)
+def _key_format_ok() -> bool:
+    k = (OPENAI_API_KEY or "").strip()
+    return k.startswith("sk-") and len(k) > 20
 
+def _fingerprint_key() -> str:
+    # lightweight fingerprint for debugging only (never return full key)
+    import hashlib
+    k = (OPENAI_API_KEY or "").encode("utf-8")
+    return hashlib.sha256(k).hexdigest()[:8] if k else ""
 
-def key_present() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY"))
-
-
-def key_format_ok() -> bool:
-    k = os.getenv("OPENAI_API_KEY", "")
-    return k.startswith("sk-") and len(k) >= 20
-
-
-def key_fingerprint() -> str:
-    k = os.getenv("OPENAI_API_KEY", "")
-    if not k:
-        return ""
-    return hashlib.sha256(k.encode("utf-8")).hexdigest()[:8]
-
-
-def norm_lang(raw: str) -> str:
-    if not raw:
+def _normalize_lang(lang: str) -> Literal["EN", "MS", "ZH", "TA"]:
+    if not lang:
         return "EN"
-    s = raw.strip()
-    s_low = s.lower()
-
-    if s_low in ("en", "eng", "english"):
+    s = str(lang).strip().upper()
+    # accept common aliases
+    if s in ("EN", "ENG", "ENGLISH"):
         return "EN"
-    if s_low in ("ms", "bm", "malay", "bahasa", "bahasamelayu"):
+    if s in ("MS", "BM", "MY", "MALAY", "BAHASA", "BAHASA MELAYU"):
         return "MS"
-    if s_low in ("zh", "cn", "chi", "中文", "chinese"):
+    if s in ("ZH", "CN", "CHINESE", "ZH-CN", "ZH-HANS", "SIMPLIFIED"):
         return "ZH"
-    if s_low in ("ta", "tam", "tamil"):
+    if s in ("TA", "TAMIL"):
         return "TA"
-
-    s_up = s.upper()
-    if s_up in ("EN", "MS", "ZH", "TA"):
-        return s_up
+    # default
     return "EN"
 
+def _looks_like_data_url(s: str) -> bool:
+    return isinstance(s, str) and s.startswith("data:image/") and ";base64," in s
 
-class AnalyzeReq(BaseModel):
-    image_data_url: str = Field(..., alias="image_data_url")
-    lang: str = "EN"
+def _data_url_size_ok(s: str) -> bool:
+    # guard against truly tiny payloads that often fail vision decode
+    try:
+        b64 = s.split(";base64,", 1)[1]
+        return len(b64) > 200  # very small images often rejected
+    except Exception:
+        return False
 
+
+# ---- models ----
+
+class AnalyzeRequest(BaseModel):
+    image_data_url: str = Field(..., description="data:image/*;base64,...")
+    lang: str = Field("EN", description="EN/MS/ZH/TA (case-insensitive accepted)")
+
+class VersionResponse(BaseModel):
+    ok: bool
+    service: str
+    uptime_s: int
+    has_key: bool
+    key_format_ok: bool
+    key_fp: str
+    model: str
+
+
+# ---- routes ----
 
 @app.get("/")
 def root():
-    return {"ok": True, "service": "waspada-api", "hint": "Use /version or /analyze"}
+    return {"ok": True, "service": SERVICE_NAME, "hint": "Try GET /version or POST /analyze"}
 
-
-@app.get("/version")
+@app.get("/version", response_model=VersionResponse)
 def version():
-    return {
-        "ok": True,
-        "service": "waspada-api",
-        "uptime_s": uptime_s(),
-        "has_key": key_present(),
-        "key_format_ok": key_format_ok(),
-        "key_fp": key_fingerprint(),
-        "model": MODEL,
-    }
-
+    return VersionResponse(
+        ok=True,
+        service=SERVICE_NAME,
+        uptime_s=int(time.time() - START_TS),
+        has_key=_has_key(),
+        key_format_ok=_key_format_ok(),
+        key_fp=_fingerprint_key(),
+        model=DEFAULT_MODEL,
+    )
 
 @app.post("/analyze")
-def analyze(req: AnalyzeReq) -> Dict[str, Any]:
-    lang = norm_lang(req.lang)
+def analyze(req: AnalyzeRequest):
+    if not _has_key():
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY missing on server.")
+    if not _key_format_ok():
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY format looks wrong (should start with sk-).")
 
-    if not req.image_data_url or not req.image_data_url.startswith("data:image"):
-        raise HTTPException(status_code=422, detail="image_data_url must be a data URL starting with data:image/...")
+    lang = _normalize_lang(req.lang)
 
-    system_prompt = f"""
-You are Waspada, an anti-scam assistant for Malaysia.
-You will review ONE screenshot and produce safe, practical guidance.
+    if not _looks_like_data_url(req.image_data_url):
+        raise HTTPException(status_code=422, detail="image_data_url must be a data:image/*;base64,... URL")
+    if not _data_url_size_ok(req.image_data_url):
+        raise HTTPException(
+            status_code=422,
+            detail="Image payload looks too small/invalid. Use a real screenshot/photo data URL (not tiny 1x1).",
+        )
 
-Return STRICT JSON only (no markdown), matching this schema:
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
-{{
-  "risk_level": "LOW" | "MEDIUM" | "HIGH",
-  "summary": "1-2 short sentences",
-  "what_looks_suspicious": ["bullet", "..."],
-  "missing_info_to_confirm": ["bullet", "..."],
-  "safe_next_steps_malaysia": [
-    "If money already moved: call NSRC 997 immediately (Malaysia).",
-    "Call your bank ASAP to freeze/recall transfer; provide transaction reference.",
-    "Keep evidence: screenshots, phone numbers, account numbers, chat logs, receipts.",
-    "Check recipient details on Semak Mule (PDRM CCID).",
-    "If links/OTP/password shared: change passwords and enable 2FA."
-  ],
-  "official_resources": [
-    {{"name":"NSRC 997 (Malaysia)","note":"If funds transferred or in-progress scam"}},
-    {{"name":"Semak Mule (PDRM CCID)","url":"https://semakmule.rmp.gov.my"}},
-    {{"name":"BNMTELELINK","value":"1-300-88-5465","note":"Bank Negara Malaysia guidance"}},
-    {{"name":"MyCERT","url":"https://www.mycert.org.my","note":"Cyber incident guidance"}}
-  ],
-  "confidence": 0.0
-}}
+    system = (
+        "You are Waspada, a Malaysia-first anti-scam assistant.\n"
+        "Return ONLY valid JSON, no markdown, no extra text.\n"
+        "Be calm, supportive, and practical.\n"
+    )
 
-Language requirement:
-- EN: English
-- MS: Bahasa Melayu
-- ZH: Simplified Chinese
-- TA: Tamil (simple)
+    # Minimal but useful schema; app can render nicely.
+    output_schema = {
+        "risk_level": "LOW|MEDIUM|HIGH",
+        "summary": "1-2 sentence summary of what this looks like",
+        "what_ai_sees": ["bullet", "bullet"],
+        "red_flags": ["bullet", "bullet"],
+        "what_to_do_now": ["bullet", "bullet"],
+        "malaysia_contacts": [
+            {"name": "NSRC", "value": "997", "note": "Call immediately if money transferred"},
+            {"name": "Semak Mule", "value": "https://semakmule.rmp.gov.my", "note": "Check mule account"},
+        ],
+        "confidence": 0.0,
+    }
 
-Be calm, non-judgemental. Focus on safety. No legal claims.
-""".strip()
-
-    user_text = f"Analyse this screenshot for scam signs in Malaysia. lang={lang}. Return JSON only."
+    user = (
+        f"Language: {lang}\n\n"
+        "Analyse this screenshot/photo for scam risk in a Malaysia context.\n"
+        "Output must be JSON matching this schema shape:\n"
+        f"{json.dumps(output_schema, ensure_ascii=False)}\n"
+    )
 
     try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-        # Responses API (best support for vision + modern models)
         resp = client.responses.create(
-            model=MODEL,
+            model=DEFAULT_MODEL,
             input=[
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": system_prompt}],
-                },
+                {"role": "system", "content": system},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": user_text},
+                        {"type": "input_text", "text": user},
                         {"type": "input_image", "image_url": req.image_data_url},
                     ],
                 },
@@ -152,56 +159,27 @@ Be calm, non-judgemental. Focus on safety. No legal claims.
         )
 
         text = (resp.output_text or "").strip()
-        if not text:
-            raise ValueError("empty_model_output")
+        if not (text.startswith("{") and text.endswith("}")):
+            raise ValueError(f"Model did not return JSON. Got: {text[:120]}")
 
-        # Parse JSON strictly; fallback if model misbehaves
-        try:
-            data = json.loads(text)
-            return {"result": {"lang": lang, **data}}
-        except Exception:
-            return {
-                "result": {
-                    "lang": lang,
-                    "risk_level": "MEDIUM",
-                    "summary": "Could not parse AI output as JSON. Please try again.",
-                    "what_looks_suspicious": [],
-                    "missing_info_to_confirm": [],
-                    "safe_next_steps_malaysia": [
-                        "If money already moved: call NSRC 997 immediately.",
-                        "Call your bank ASAP and request to freeze/recall the transfer.",
-                        "Keep evidence: screenshots, phone numbers, account numbers, chat logs.",
-                        "Check recipient details on Semak Mule (PDRM CCID).",
-                    ],
-                    "official_resources": [
-                        {"name": "NSRC 997 (Malaysia)", "note": "If funds transferred or in-progress scam"},
-                        {"name": "Semak Mule (PDRM CCID)", "url": "https://semakmule.rmp.gov.my"},
-                        {"name": "BNMTELELINK", "value": "1-300-88-5465"},
-                    ],
-                    "confidence": 0.2,
-                    "_debug_raw_model_output": text[:400],
-                }
-            }
+        data = json.loads(text)
+        return {"result": {"lang": lang, **data}}
 
-    except AuthenticationError:
-        raise HTTPException(
-            status_code=500,
-            detail=f"OPENAI_AUTH_FAILED (key_fp={key_fingerprint()}). Re-check OPENAI_API_KEY in Render, save, and redeploy.",
-        )
-    except RateLimitError:
-        raise HTTPException(status_code=503, detail="OPENAI_RATE_LIMIT. Try again in a minute.")
-    except APIConnectionError:
-        raise HTTPException(status_code=502, detail="OPENAI_CONNECTION_ERROR. Upstream network issue, try again.")
-    except APIStatusError as e:
-        # Try to surface the OpenAI error message cleanly
-        msg = "OPENAI_STATUS_ERROR"
-        try:
-            body = e.response.json()
-            if isinstance(body, dict) and "error" in body and isinstance(body["error"], dict):
-                msg = body["error"].get("message", msg)
-        except Exception:
-            pass
-        raise HTTPException(status_code=502, detail=f"OPENAI_400/500: {msg}")
     except Exception as e:
+        msg = str(e)
         log.exception("Analyze failed")
-        raise HTTPException(status_code=500, detail=f"AI service error: {str(e)[:180]}")
+
+        # surface OpenAI errors clearly
+        if "Incorrect API key" in msg or "invalid_api_key" in msg or "Error code: 401" in msg:
+            raise HTTPException(
+                status_code=500,
+                detail="AI auth failed. Check OPENAI_API_KEY on Render, then redeploy.",
+            )
+
+        if "The image data you provided does not represent a valid image" in msg:
+            raise HTTPException(
+                status_code=422,
+                detail="OpenAI rejected the image as invalid. Send a real screenshot/photo (larger base64), not tiny test images.",
+            )
+
+        raise HTTPException(status_code=502, detail=f"OPENAI_ERROR: {msg}")
