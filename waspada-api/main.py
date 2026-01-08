@@ -19,25 +19,26 @@ app = FastAPI(title="waspada-api")
 
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+
 def uptime_s() -> int:
     return int(time.time() - START_TS)
 
+
 def key_present() -> bool:
     return bool(os.getenv("OPENAI_API_KEY"))
+
 
 def key_format_ok() -> bool:
     k = os.getenv("OPENAI_API_KEY", "")
     return k.startswith("sk-") and len(k) >= 20
 
+
 def key_fingerprint() -> str:
-    """
-    Safe fingerprint so you can verify Render is using the intended key,
-    without ever printing the key.
-    """
     k = os.getenv("OPENAI_API_KEY", "")
     if not k:
         return ""
     return hashlib.sha256(k.encode("utf-8")).hexdigest()[:8]
+
 
 def norm_lang(raw: str) -> str:
     if not raw:
@@ -59,13 +60,16 @@ def norm_lang(raw: str) -> str:
         return s_up
     return "EN"
 
+
 class AnalyzeReq(BaseModel):
     image_data_url: str = Field(..., alias="image_data_url")
     lang: str = "EN"
 
+
 @app.get("/")
 def root():
     return {"ok": True, "service": "waspada-api", "hint": "Use /version or /analyze"}
+
 
 @app.get("/version")
 def version():
@@ -78,6 +82,7 @@ def version():
         "key_fp": key_fingerprint(),
         "model": MODEL,
     }
+
 
 @app.post("/analyze")
 def analyze(req: AnalyzeReq) -> Dict[str, Any]:
@@ -125,31 +130,32 @@ Be calm, non-judgemental. Focus on safety. No legal claims.
     user_text = f"Analyse this screenshot for scam signs in Malaysia. lang={lang}. Return JSON only."
 
     try:
-        # Explicitly pass key to avoid any env confusion
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        resp = client.responses.create(
+        # Use Chat Completions (compatible with openai==1.57.4)
+        resp = client.chat.completions.create(
             model=MODEL,
-            input=[
+            messages=[
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": user_text},
-                        {"type": "input_image", "image_url": req.image_data_url},
+                        {"type": "text", "text": user_text},
+                        {"type": "image_url", "image_url": {"url": req.image_data_url}},
                     ],
                 },
             ],
-            max_output_tokens=900,
+            max_tokens=900,
         )
 
-        text = (resp.output_text or "").strip()
+        text = (resp.choices[0].message.content or "").strip()
         if not text:
             raise ValueError("empty_model_output")
 
-        # Hard-parse JSON (but if it fails, return a truncated raw output to debug)
+        # Parse JSON strictly; if it fails, return a safe fallback + truncated raw output
         try:
             data = json.loads(text)
+            return {"result": {"lang": lang, **data}}
         except Exception:
             return {
                 "result": {
@@ -162,20 +168,19 @@ Be calm, non-judgemental. Focus on safety. No legal claims.
                         "If money already moved: call NSRC 997 immediately.",
                         "Call your bank ASAP and request to freeze/recall the transfer.",
                         "Keep evidence: screenshots, phone numbers, account numbers, chat logs.",
+                        "Check recipient details on Semak Mule (PDRM CCID).",
                     ],
                     "official_resources": [
                         {"name": "NSRC 997 (Malaysia)", "note": "If funds transferred or in-progress scam"},
                         {"name": "Semak Mule (PDRM CCID)", "url": "https://semakmule.rmp.gov.my"},
+                        {"name": "BNMTELELINK", "value": "1-300-88-5465"},
                     ],
                     "confidence": 0.2,
                     "_debug_raw_model_output": text[:400],
                 }
             }
 
-        return {"result": {"lang": lang, **data}}
-
     except AuthenticationError:
-        # This means OpenAI rejected the key (revoked/typo/wrong account)
         raise HTTPException(
             status_code=500,
             detail=f"OPENAI_AUTH_FAILED (key_fp={key_fingerprint()}). Re-check OPENAI_API_KEY in Render, save, and redeploy.",
