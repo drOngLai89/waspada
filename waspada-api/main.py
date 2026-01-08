@@ -1,289 +1,237 @@
 import os
 import json
-import re
-import base64
 import logging
-from typing import Optional, Literal, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-
 from openai import OpenAI
 
-# ----------------------------
-# App setup
-# ----------------------------
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("waspada-api")
 
-app = FastAPI()
+app = FastAPI(title="Waspada API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # tighten later if you want
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "45"))
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-client = OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT)
+# --- Official Malaysia resources (keep short, linkable) ---
+OFFICIAL_RESOURCES: List[Dict[str, str]] = [
+    {
+        "name": "NSRC (National Scam Response Centre)",
+        "type": "phone",
+        "value": "997",
+        "notes": "Malaysia. If money has moved or banking fraud is in progress. Call immediately."
+    },
+    {
+        "name": "PDRM Semak Mule",
+        "type": "url",
+        "value": "https://semakmule.rmp.gov.my/",
+        "notes": "Malaysia. Check suspected phone/bank account links to mule accounts."
+    },
+    {
+        "name": "CyberSecurity Malaysia (Cyber999)",
+        "type": "url",
+        "value": "https://www.mycert.org.my/cyber999/",
+        "notes": "Malaysia. Cyber incident reporting guidance."
+    },
+]
 
-Lang = Literal["EN", "MS", "ZH", "TA"]
-
-# ----------------------------
-# Request/Response models
-# ----------------------------
-class AnalyzeRequest(BaseModel):
-    # Optional screenshot. We keep this optional so Waspada is NOT "just a screenshot scanner".
-    image_data_url: Optional[str] = Field(
-        default=None,
-        description="data:image/jpeg;base64,... (optional)"
-    )
-    lang: Lang = "EN"
-
-    # New: user context fields that make Waspada a Malaysia scam ACTION app
-    scenario: Optional[str] = Field(
-        default=None,
-        description="User-selected scenario: e.g., 'bank_transfer', 'otp_tac', 'courier_scam', 'investment', 'job_scam', 'loan_scam', 'romance', 'ecommerce', etc."
-    )
-    channel: Optional[str] = Field(
-        default=None,
-        description="Where it happened: WhatsApp/Telegram/SMS/Facebook/Call/Email/Website/etc."
-    )
-    notes: Optional[str] = Field(
-        default=None,
-        description="What the user wants you to know (short)."
-    )
-
-class AnalyzeResponse(BaseModel):
-    lang: Lang
-    out_of_scope: bool
-    malaysia_relevance: str
-
-    risk: Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
-    verdict: str
-    summary: str
-
-    what_we_used: List[str]  # e.g. ["screenshot", "notes"]
-    what_ai_saw: List[str]
-    red_flags: List[str]
-
-    next_actions: List[Dict[str, Any]]
-    who_to_contact: List[Dict[str, str]]
-
-    disclaimer: str
-
-# ----------------------------
-# Helpers
-# ----------------------------
-def _safe_trim(s: Optional[str], max_len: int) -> Optional[str]:
-    if not s:
-        return s
-    s = s.strip()
-    return s[:max_len]
-
-def _validate_data_url(data_url: str) -> str:
-    """
-    Accepts data:image/...;base64,...
-    We do NOT decode to bytes for OCR. We only do sanity checks and send to OpenAI as an image input.
-    """
-    if not data_url.startswith("data:image/"):
-        raise HTTPException(status_code=400, detail="image_data_url must start with data:image/...")
-
-    if ";base64," not in data_url:
-        raise HTTPException(status_code=400, detail="image_data_url must be base64 encoded (data:image/...;base64,...)")
-
-    # basic size guard (prevents 5MB+ payloads destroying latency)
-    # data_url length is a rough proxy; 2,500,000 chars ~ ~1.8MB base64-ish depending on content
-    if len(data_url) > 2_500_000:
-        raise HTTPException(status_code=413, detail="Screenshot is too large. Please pick a smaller screenshot or crop it.")
-
-    return data_url
-
-def _json_schema() -> Dict[str, Any]:
-    # Tight schema so frontend displays nicely and doesn't show raw blobs
-    return {
-        "name": "waspada_malaysia_scam_triage",
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "lang": {"type": "string", "enum": ["EN", "MS", "ZH", "TA"]},
-                "out_of_scope": {"type": "boolean"},
-                "malaysia_relevance": {"type": "string"},
-
-                "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "UNKNOWN"]},
-                "verdict": {"type": "string"},
-                "summary": {"type": "string"},
-
-                "what_we_used": {"type": "array", "items": {"type": "string"}},
-                "what_ai_saw": {"type": "array", "items": {"type": "string"}},
-                "red_flags": {"type": "array", "items": {"type": "string"}},
-
-                "next_actions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "priority": {"type": "integer", "minimum": 1, "maximum": 10},
-                            "title": {"type": "string"},
-                            "timeframe": {"type": "string"},
-                            "details": {"type": "string"},
-                            "who": {"type": "array", "items": {"type": "string"}}
-                        },
-                        "required": ["priority", "title", "timeframe", "details", "who"]
-                    }
-                },
-                "who_to_contact": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "name": {"type": "string"},
-                            "how": {"type": "string"},
-                            "when": {"type": "string"}
-                        },
-                        "required": ["name", "how", "when"]
-                    }
-                },
-
-                "disclaimer": {"type": "string"}
-            },
-            "required": [
-                "lang", "out_of_scope", "malaysia_relevance",
-                "risk", "verdict", "summary",
-                "what_we_used", "what_ai_saw", "red_flags",
-                "next_actions", "who_to_contact",
-                "disclaimer"
-            ]
-        }
+SCENARIO_PRESETS: Dict[str, Dict[str, Any]] = {
+    "MONEY_MOVED": {
+        "title": "Money already moved",
+        "steps": [
+            "Call your bank’s fraud hotline now and tell them it’s an active scam case.",
+            "Call NSRC 997 immediately (Malaysia). Ask for fund tracing / recall guidance.",
+            "Make a police report as soon as possible and keep all evidence."
+        ],
+        "evidence": [
+            "Screenshots of chat/SMS/WhatsApp",
+            "Bank transfer receipt / reference number",
+            "Phone numbers, account numbers, names used",
+            "Any links / QR codes / payment instructions"
+        ],
+    },
+    "OTP_PASSWORD": {
+        "title": "OTP / password requested",
+        "steps": [
+            "Do not share OTP/TAC codes or passwords. Stop replying.",
+            "If you entered credentials, change passwords immediately and enable 2FA.",
+            "Call your bank to flag potential account takeover."
+        ],
+        "evidence": ["Screenshots of the request", "Caller ID / profile / link used"],
+    },
+    "COURIER": {
+        "title": "Courier / parcel / “customs” scam",
+        "steps": [
+            "Do not pay ‘release fees’ via unknown links.",
+            "Verify using official courier channels (not numbers in the message).",
+            "If pressured, stop engagement and keep evidence."
+        ],
+        "evidence": ["SMS/WhatsApp screenshot", "Tracking number shown", "Payment link"],
+    },
+    "IMPERSONATION": {
+        "title": "Government / police impersonation",
+        "steps": [
+            "Hang up. Do not stay on the line.",
+            "Never transfer money to ‘safe accounts’.",
+            "Verify using official numbers from official websites only."
+        ],
+        "evidence": ["Call time/log", "Numbers used", "Any ‘case ID’ given", "Screenshots"],
+    },
+    "INVESTMENT": {
+        "title": "Investment / high return pitch",
+        "steps": [
+            "Be cautious of guaranteed returns and urgency tactics.",
+            "Do not install unknown apps or allow remote access.",
+            "If you already paid, treat it as MONEY_MOVED and act immediately."
+        ],
+        "evidence": ["Promo messages", "Account details", "App name/link", "Receipts"],
+    },
+    "OTHER": {
+        "title": "General suspicious message",
+        "steps": [
+            "Do not click links or scan unknown QR codes.",
+            "Verify via official channels. Keep evidence.",
+            "If money moved, switch to MONEY_MOVED steps."
+        ],
+        "evidence": ["Screenshot", "Link/QR", "Phone/account details"],
     }
+}
 
-def _system_prompt(lang: Lang) -> str:
-    # Malaysia-first playbook (kept short but strong)
-    # Core official “what to do” is anchored on NSRC (997) + report + bank action patterns.
-    # We must NOT claim to be an authority, and MUST show disclaimers.
-    base = f"""
-You are Waspada, a Malaysia-focused anti-scam action assistant.
-Your job: help people in Malaysia respond safely to suspected scams.
+# --------- Models ----------
+class AnalyzeRequest(BaseModel):
+    image_data_url: str = Field(..., description="data:image/...;base64,...")
+    lang: str = Field("EN", description="EN | MS | ZH | TA")
 
-IMPORTANT RULES:
-- Waspada is Malaysia-focused. If the situation is clearly not related to Malaysia (no Malaysia context, no Malaysia banks, no MY phone numbers, no MY agencies, no MY location), set out_of_scope=true and explain briefly.
-- You must NEVER claim this is an official finding. This is AI-generated guidance only.
-- Be calm, practical, and step-by-step. Prefer short bullet-like items, not long essays.
-- If money was transferred / banking credentials or TAC/OTP shared / remote access installed: treat as HIGH risk unless strong evidence says otherwise.
-- Do not ask the user to do risky things. Never tell them to “test” the scammer.
+class ActionPlanRequest(BaseModel):
+    scenario: str = Field(..., description="MONEY_MOVED | OTP_PASSWORD | COURIER | INVESTMENT | IMPERSONATION | OTHER")
+    lang: str = Field("EN")
 
-MALAYSIA ACTION PLAYBOOK (use where relevant):
-- If funds were transferred or bank access compromised: advise urgent action to contact the bank immediately and use Malaysia’s National Scam Response Centre (NSRC) hotline (997) for rapid response (when applicable).
-- Encourage preserving evidence (screenshots, transaction refs, phone numbers, URLs) and making a police report.
-- Mention checking mule accounts via Semak Mule where applicable.
-- If it involves phishing links, malware, or suspicious websites: advise not clicking further and consider reporting to relevant Malaysian cyber channels.
+class VersionResponse(BaseModel):
+    ok: bool
+    service: str = "waspada-api"
+    has_key: bool
+    model: str
 
-OUTPUT STYLE:
-- Always produce a structured response that a mobile app can display cleanly.
-- Prefer “what to do now” with priorities and timeframes.
-- If screenshot is unrelated (e.g. random social post) say so and mark out_of_scope accordingly.
-"""
-    if lang == "MS":
-        base += "\nWrite in Bahasa Malaysia."
-    elif lang == "ZH":
-        base += "\nWrite in Simplified Chinese."
-    elif lang == "TA":
-        base += "\nWrite in Tamil (simple, clear)."
-    else:
-        base += "\nWrite in English."
-
-    return base.strip()
-
-def _user_prompt(req: AnalyzeRequest) -> str:
-    # Keep it crisp. The model should infer from screenshot if provided.
-    scenario = _safe_trim(req.scenario, 80)
-    channel = _safe_trim(req.channel, 80)
-    notes = _safe_trim(req.notes, 800)
-
-    parts = []
-    if scenario:
-        parts.append(f"Scenario: {scenario}")
-    if channel:
-        parts.append(f"Channel: {channel}")
-    if notes:
-        parts.append(f"User notes: {notes}")
-
-    if not parts:
-        parts.append("No extra context provided.")
-
-    parts.append("""
-Now:
-1) Decide if this is Malaysia-relevant. If not, mark out_of_scope=true.
-2) Summarise what you see (or infer) safely.
-3) Give a risk rating and verdict.
-4) Provide next actions with clear priorities/timeframes and who to contact.
-5) Include a clear disclaimer that this is AI guidance only (not official).
-""".strip())
-
-    return "\n".join(parts)
-
-# ----------------------------
-# Routes
-# ----------------------------
-@app.get("/version")
+@app.get("/version", response_model=VersionResponse)
 def version():
+    return VersionResponse(ok=True, has_key=bool(OPENAI_API_KEY), model=OPENAI_MODEL)
+
+@app.get("/resources")
+def resources():
+    return {"ok": True, "resources": OFFICIAL_RESOURCES}
+
+@app.post("/action-plan")
+def action_plan(req: ActionPlanRequest):
+    scenario = (req.scenario or "OTHER").upper().strip()
+    preset = SCENARIO_PRESETS.get(scenario, SCENARIO_PRESETS["OTHER"])
     return {
         "ok": True,
-        "service": "waspada-api",
-        "has_key": bool(OPENAI_API_KEY),
-        "model": OPENAI_MODEL
+        "scenario": scenario,
+        "title": preset["title"],
+        "steps": preset["steps"],
+        "evidence_to_save": preset["evidence"],
+        "disclaimer": (
+            "This is general guidance for Malaysia only. "
+            "It is not official advice, not legal advice, and may be incomplete. "
+            "For urgent or high-risk situations, contact your bank and the relevant authorities."
+        ),
+        "official_resources": OFFICIAL_RESOURCES,
     }
+
+def _safe_json_loads(text: str) -> Dict[str, Any]:
+    try:
+        return json.loads(text)
+    except Exception:
+        # last-resort: try to extract a JSON object block
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start:end+1])
+        raise
 
 @app.post("/analyze")
 def analyze(req: AnalyzeRequest):
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY on server.")
 
-    used = []
-    image_data_url = None
-    if req.image_data_url:
-        image_data_url = _validate_data_url(req.image_data_url)
-        used.append("screenshot")
+    data_url = req.image_data_url
+    lang = (req.lang or "EN").upper().strip()
 
-    if req.notes:
-        used.append("notes")
-    if req.scenario:
-        used.append("scenario")
-    if req.channel:
-        used.append("channel")
-    if not used:
-        used = ["none"]
+    system = (
+        "You are Waspada, a Malaysia-focused anti-scam assistant.\n"
+        "You must return ONLY valid JSON (no markdown, no extra text).\n"
+        "If the content is not related to Malaysia scam safety, set out_of_scope=true.\n"
+        "Never invent phone numbers or government programmes. Use only the provided official resources list.\n"
+        "Keep output concise and actionable."
+    )
+
+    resources_text = "\n".join([f"- {r['name']}: {r['type']} {r['value']} ({r.get('notes','')})" for r in OFFICIAL_RESOURCES])
+
+    user = (
+        f"Language: {lang}\n"
+        f"Official Malaysia resources you MAY reference:\n{resources_text}\n\n"
+        "Task:\n"
+        "1) Interpret what the screenshot shows (short).\n"
+        "2) Decide if it is Malaysia-relevant scam content.\n"
+        "3) Give a clear verdict + risk level.\n"
+        "4) Provide next actions (bullets) and who to contact (choose from official resources).\n"
+        "5) Provide evidence to save.\n"
+        "6) Provide a clear caveat/disclaimer that this is AI-generated guidance and not official diagnostics.\n\n"
+        "Return JSON with keys:\n"
+        "lang, out_of_scope, malaysia_relevance, scenario, verdict, risk, summary,\n"
+        "what_the_screenshot_suggests, key_red_flags (array), what_to_do_next (array),\n"
+        "who_to_contact (array of {name,type,value,notes}), evidence_to_save (array),\n"
+        "message_you_can_copy, disclaimer, official_resources (array)\n"
+    )
 
     try:
-        inputs = [
-            {"role": "system", "content": [{"type": "input_text", "text": _system_prompt(req.lang)}]},
-            {"role": "user", "content": [{"type": "input_text", "text": _user_prompt(req)}]},
-        ]
-
-        if image_data_url:
-            inputs[1]["content"].append({"type": "input_image", "image_url": image_data_url})
-
-        resp = client.responses.create(
+        # Use Chat Completions (works broadly; avoids responses.create response_format issues)
+        resp = client.chat.completions.create(
             model=OPENAI_MODEL,
-            input=inputs,
-            max_output_tokens=1200,
-            response_format={"type": "json_schema", "json_schema": _json_schema()},
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            temperature=0.2,
+            max_tokens=900,
         )
 
-        # responses API returns structured output in output_text
-        raw_text = resp.output_text
-        data = json.loads(raw_text)
+        text = resp.choices[0].message.content or "{}"
+        data = _safe_json_loads(text)
 
-        # Force-fill what_we_used from server-side detection (so UI is consistent)
-        data["what_we_used"] = used
+        # Always attach official resources for UI rendering
+        data["official_resources"] = OFFICIAL_RESOURCES
 
-        # Safety: ensure disclaimer exists and is clear
-        if not data.get("disclaimer"):
-            data["disclaimer"] = (
-                "This guidance is generated by AI based on what you provided. "
-                "It is not an official determination, not legal advice, and may be inaccurate. "
-                "If you are at risk or have lost money, contact your bank and the relevant Malaysian authorities immediately."
-            )
+        # Defensive defaults
+        data.setdefault("lang", lang)
+        data.setdefault("out_of_scope", False)
+        data.setdefault("risk", "UNKNOWN")
+        data.setdefault("verdict", "UNKNOWN")
+        data.setdefault("scenario", "OTHER")
+        data.setdefault("summary", "")
+        data.setdefault("what_to_do_next", [])
+        data.setdefault("who_to_contact", [])
+        data.setdefault("evidence_to_save", [])
+        data.setdefault("disclaimer", "This is AI-generated guidance and may be wrong or incomplete. For urgent cases, contact your bank and the relevant authorities.")
 
         return {"result": data}
 
@@ -292,12 +240,11 @@ def analyze(req: AnalyzeRequest):
     except Exception as e:
         msg = str(e)
         log.exception("Analyze failed: %s", msg)
-
         low = msg.lower()
         if "invalid_api_key" in low or "incorrect api key" in low or "401" in low:
             raise HTTPException(status_code=500, detail="Auth failed. Check OPENAI_API_KEY on Render and redeploy.")
         if "rate limit" in low or "429" in low:
-            raise HTTPException(status_code=503, detail="AI service is rate-limited. Try again in a minute.")
+            raise HTTPException(status_code=503, detail="AI is rate-limited. Try again in a minute.")
         if "timeout" in low:
-            raise HTTPException(status_code=504, detail="AI service timed out. Try again.")
+            raise HTTPException(status_code=504, detail="AI timed out. Try again.")
         raise HTTPException(status_code=502, detail=f"AI service error: {msg}")
