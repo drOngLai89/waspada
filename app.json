@@ -6,9 +6,7 @@
     "version": "1.0.1",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "assetBundlePatterns": [
-      "assets/*"
-    ],
+    "assetBundlePatterns": ["assets/*"],
     "icon": "./assets/icon.png",
     "splash": {
       "image": "./assets/splash.png",
@@ -28,14 +26,10 @@
         "backgroundColor": "#FFFFFF"
       }
     },
-    "plugins": [
-      "expo-router"
-    ],
+    "plugins": ["expo-router"],
     "extra": {
       "router": {},
-      "eas": {
-        "projectId": "1cbd19f5-cc40-43bf-bdf2-4ba451ff66a6"
-      }
+      "eas": { "projectId": "1cbd19f5-cc40-43bf-bdf2-4ba451ff66a6" }
     },
     "owner": "drshermanxu"
   }
