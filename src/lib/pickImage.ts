@@ -1,32 +1,38 @@
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 
-export type PickResult = { uri:string; fileName:string; mime:string; width:number; height:number };
+function getImagesMediaType() {
+  const anyPicker: any = ImagePicker as any;
+  return anyPicker?.MediaType?.Images ?? anyPicker?.MediaTypeOptions?.Images;
+}
 
-export async function pickImageFromLibrary(maxSide = 1600): Promise<PickResult | null> {
-  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (perm.status !== "granted") return null;
+export async function pickScreenshotDataUrl(): Promise<{ dataUrl: string; approxBytes: number } | null> {
+  const mediaTypes = getImagesMediaType();
 
   const res = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ImagePicker.MediaTypeOptions.Images,
-    allowsMultipleSelection: false,
+    mediaTypes: mediaTypes ? mediaTypes : undefined,
+    quality: 0.85,
+    base64: true,
     allowsEditing: false,
-    quality: 1,
-    exif: false,
-    base64: false
   });
-  if (res.canceled) return null;
 
-  const a = res.assets[0];
-  const w = a.width ?? 0, h = a.height ?? 0;
-  const scale = Math.min(1, maxSide / Math.max(w || maxSide, h || maxSide));
-  const target = (scale < 1 && w && h) ? { width: Math.round(w * scale) } : undefined;
+  if ((res as any).canceled) return null;
 
-  const out = await ImageManipulator.manipulateAsync(
-    a.uri,
-    target ? [{ resize: target }] : [],
-    { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG }
+  const asset = (res as any).assets?.[0];
+  if (!asset?.uri) return null;
+
+  // Resize/compress to keep payload smaller and more reliable
+  const manipulated = await ImageManipulator.manipulateAsync(
+    asset.uri,
+    [{ resize: { width: 1100 } }],
+    { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG, base64: true }
   );
 
-  return { uri: out.uri, fileName: "photo.jpg", mime: "image/jpeg", width: out.width ?? w, height: out.height ?? h };
+  const b64 = manipulated.base64;
+  if (!b64) return null;
+
+  const dataUrl = `data:image/jpeg;base64,${b64}`;
+  const approxBytes = Math.floor((b64.length * 3) / 4);
+
+  return { dataUrl, approxBytes };
 }

@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Waspada",
+    "slug": "waspada",
+    "scheme": "waspada",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "assets/*"
+    ],
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.waspada",
+      "buildNumber": "4"
+    },
+    "android": {
+      "package": "com.example.waspada",
+      "versionCode": 5,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      }
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "1cbd19f5-cc40-43bf-bdf2-4ba451ff66a6"
+      }
+    },
+    "owner": "drshermanxu"
+  }
+}

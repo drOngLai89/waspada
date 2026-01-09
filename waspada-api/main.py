@@ -1,438 +1,662 @@
 import os
+import re
 import json
-import logging
-from typing import Any, Dict, List, Optional
+from datetime import date
+from typing import List, Optional, Literal, Dict, Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from openai import OpenAI
+# ---- OpenAI (new SDK) ----
+try:
+    from openai import OpenAI
+except Exception as e:
+    OpenAI = None
 
-log = logging.getLogger("waspada-api")
-logging.basicConfig(level=logging.INFO)
 
-APP_NAME = "Waspada API"
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# ----------------------------
+# Models
+# ----------------------------
+Lang = Literal["EN", "MS", "ZH", "TA"]
 
-# --- Official sources (Malaysia) ---
-# NOTE: We attach these to outputs via source_ids, and also expose them via /resources.
-# Load-bearing official references:
-# - NFCC / NSRC 997: :contentReference[oaicite:0]{index=0}
-# - PDRM Semak Mule & CCID reporting guidance: :contentReference[oaicite:1]{index=1}
-# - BNM Financial Consumer Alert: :contentReference[oaicite:2]{index=2}
-# - SC Investor Alert List: 
-# - CyberSecurity Malaysia Cyber999 portal: :contentReference[oaicite:4]{index=4}
+Verdict = Literal[
+    "HIGH_RISK_INDICATORS",
+    "SUSPICIOUS_INDICATORS",
+    "UNCLEAR_NEEDS_VERIFICATION",
+]
 
-LAST_VERIFIED = os.getenv("WASPADA_SOURCES_LAST_VERIFIED", "2026-01-08")
+Risk = Literal["HIGH", "MEDIUM", "LOW"]
 
-SOURCES: Dict[str, Dict[str, str]] = {
-    "NFCC_NSRC_997": {
-        "title": "National Scam Response Centre (NSRC) – 997",
-        "org": "National Fraud Control Centre (NFCC), Prime Minister’s Department",
-        "url": "https://nfcc.jpm.gov.my/",
-        "notes": "NSRC hotline for scam/fraud cases where funds may have moved. Reference the NSRC page on NFCC site.",
-        "last_verified": LAST_VERIFIED,
-    },
-    "PDRM_SEMAKMULE": {
-        "title": "Semak Mule (Account/Phone Checking)",
-        "org": "Royal Malaysia Police (PDRM)",
-        "url": "https://ccid.rmp.gov.my/semakmule",
-        "notes": "PDRM CCID page referencing Semak Mule portal and related checks.",
-        "last_verified": LAST_VERIFIED,
-    },
-    "PDRM_CCID_EREPORT": {
-        "title": "PDRM CCID e-Reporting (Commercial Crime)",
-        "org": "Royal Malaysia Police (PDRM)",
-        "url": "https://ereporting.rmp.gov.my/",
-        "notes": "Official PDRM online reporting portal guidance referenced by PDRM CCID pages.",
-        "last_verified": LAST_VERIFIED,
-    },
-    "BNM_FCA": {
-        "title": "Financial Consumer Alert",
-        "org": "Bank Negara Malaysia (BNM)",
-        "url": "https://www.bnm.gov.my/financial-consumer-alert",
-        "notes": "List of entities/alerts for consumer protection (check before investing/transferring).",
-        "last_verified": LAST_VERIFIED,
-    },
-    "SC_INVESTOR_ALERT": {
-        "title": "Investor Alert List",
-        "org": "Securities Commission Malaysia (SC)",
-        "url": "https://www.sc.com.my/investor-alert-list",
-        "notes": "Investor Alert List for suspicious/unlicensed investment offers.",
-        "last_verified": LAST_VERIFIED,
-    },
-    "CSM_CYBER999": {
-        "title": "Cyber999 Incident Reporting",
-        "org": "CyberSecurity Malaysia",
-        "url": "https://www.mycert.org.my/portal/advisory?id=CYBER999_20230919112452",
-        "notes": "Cyber999 reporting info (phishing, malware, online abuse).",
-        "last_verified": LAST_VERIFIED,
-    },
-}
+Scenario = Literal[
+    "money_moved",
+    "asked_to_pay",
+    "otp_password",
+    "courier",
+    "investment",
+    "job",
+    "romance",
+    "impersonation",
+    "other",
+]
 
-# --- API models ---
 class AnalyzeIn(BaseModel):
-    image_data_url: str = Field(..., description="data:image/...;base64,...")
-    lang: Optional[str] = "EN"
+    image_data_url: str = Field(..., description="data:<mime>;base64,...")
+    lang: Lang = "EN"
 
-class SourceOut(BaseModel):
+class Source(BaseModel):
     id: str
     title: str
     org: str
     url: str
-    notes: str
-    last_verified: str
+    notes: Optional[str] = None
+    last_verified: Optional[str] = None  # YYYY-MM-DD
 
-class ContactOut(BaseModel):
-    name: str
-    type: str  # phone|url|email
-    value: str
-    notes: str = ""
-    source_ids: List[str] = []
-
-class ActionOut(BaseModel):
+class Action(BaseModel):
     step: str
-    why: str = ""
-    source_ids: List[str] = []
+    why: Optional[str] = None
+    source_ids: Optional[List[str]] = None
 
-class AnalyzeOut(BaseModel):
-    out_of_scope: bool = False
+class Contact(BaseModel):
+    name: str
+    type: Literal["phone", "url", "email"]
+    value: str
+    notes: Optional[str] = None
+    source_ids: Optional[List[str]] = None
+
+class VerifyResult(BaseModel):
+    verdict: Verdict
+    risk: Risk
     malaysia_relevance: str
-    scenario: str
-    verdict: str
-    risk: str
-    what_the_screenshot_shows: List[str]
-    analysis: str
-    findings: List[str] = []
-    recommended_next_actions: List[ActionOut] = []
-    who_to_contact: List[ContactOut] = []
-    evidence_to_save: List[str] = []
-    caveat: str
-    sources: List[SourceOut] = []
+    scenario: Scenario
+    out_of_scope: Optional[bool] = False
 
-class ResourceCategoryOut(BaseModel):
-    id: str
-    title: str
-    items: List[SourceOut]
+    what_the_screenshot_shows: Optional[List[str]] = None
+    analysis: Optional[str] = None
+    findings: Optional[List[str]] = None
 
-class ResourcesOut(BaseModel):
-    last_verified: str
-    categories: List[ResourceCategoryOut]
+    recommended_next_actions: Optional[List[Action]] = None
+    who_to_contact: Optional[List[Contact]] = None
+    evidence_to_save: Optional[List[str]] = None
+
+    caveat: Optional[str] = None
+    sources: Optional[List[Source]] = None
 
 
-def _client() -> OpenAI:
-    key = os.getenv("OPENAI_API_KEY", "")
-    if not key:
-        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY on server.")
-    return OpenAI(api_key=key)
-
-
-def _pick_sources(ids: List[str]) -> List[SourceOut]:
-    out: List[SourceOut] = []
-    seen = set()
-    for sid in ids:
-        if sid in SOURCES and sid not in seen:
-            s = SOURCES[sid]
-            out.append(SourceOut(
-                id=sid,
-                title=s["title"],
-                org=s["org"],
-                url=s["url"],
-                notes=s.get("notes", ""),
-                last_verified=s.get("last_verified", LAST_VERIFIED),
-            ))
-            seen.add(sid)
-    return out
-
-
-def _ensure_nonempty_list(v: Any, fallback: str) -> List[str]:
-    if isinstance(v, list):
-        cleaned = [str(x).strip() for x in v if str(x).strip()]
-        if cleaned:
-            return cleaned
-    return [fallback]
-
-
-def _json_mode_prompt() -> str:
-    # Keep it very practical + Malaysia-first.
-    # We also force the model to populate 'what_the_screenshot_shows' with at least 3 bullets,
-    # or explicitly say it cannot reliably read.
-    return f"""
-You are Waspada, a Malaysia-first anti-scam assistant.
-
-Your job:
-1) Interpret what is visible in the screenshot (messages, bank/payment UI, URLs, names, amounts, threats).
-2) Decide a scenario category and risk.
-3) Give Malaysia-specific next actions aligned to OFFICIAL Malaysia resources.
-4) Provide who to contact in Malaysia (hotlines / official sites) and cite them using source_ids.
-
-STRICT RULES:
-- Malaysia-only. If the screenshot has no Malaysia context, set out_of_scope=true and explain briefly.
-- NEVER claim certainty. Be careful. No legal or medical claims.
-- Always include a caveat: AI-generated guidance, may be wrong/incomplete, refer to bank/PDRM/authorities.
-- Always output valid JSON matching the schema. No markdown.
-
-Allowed scenario values:
-MONEY_MOVED, ASKED_TO_PAY, OTP_PASSWORD, COURIER, INVESTMENT, JOB, ROMANCE, IMPERSONATION, OTHER, OUT_OF_SCOPE
-
-Verdict values:
-LIKELY_SCAM, SUSPICIOUS, UNCLEAR, LIKELY_SAFE, OUT_OF_SCOPE
-
-Risk values:
-LOW, MEDIUM, HIGH
-
-OFFICIAL SOURCES (use these IDs in source_ids when relevant):
-- NFCC_NSRC_997 (NSRC 997)
-- PDRM_SEMAKMULE (Semak Mule)
-- PDRM_CCID_EREPORT (PDRM e-Reporting)
-- BNM_FCA (BNM Financial Consumer Alert)
-- SC_INVESTOR_ALERT (SC Investor Alert List)
-- CSM_CYBER999 (Cyber999)
-
-Output JSON schema:
-{{
-  "out_of_scope": boolean,
-  "malaysia_relevance": string,
-  "scenario": string,
-  "verdict": string,
-  "risk": string,
-
-  "what_the_screenshot_shows": [string, ...],   // MUST NOT be empty. Aim 3-6 bullets.
-  "analysis": string,                            // short paragraph
-  "findings": [string, ...],                     // 3-8 key red flags / observations
-
-  "recommended_next_actions": [
-    {{
-      "step": string,                            // action step (imperative)
-      "why": string,                             // short reason
-      "source_ids": [string, ...]                // from official sources above
-    }}
-  ],
-
-  "who_to_contact": [
-    {{
-      "name": string,
-      "type": "phone"|"url"|"email",
-      "value": string,
-      "notes": string,
-      "source_ids": [string, ...]
-    }}
-  ],
-
-  "evidence_to_save": [string, ...],
-
-  "caveat": string,
-  "source_ids_used": [string, ...]               // list all official ids you relied on
-}}
-
-If you cannot read text clearly:
-- Put a bullet in what_the_screenshot_shows: "Couldn’t reliably read the text; retake a clearer screenshot (full message, no blur)."
-- Still infer scenario if possible from visible context, otherwise OUT_OF_SCOPE.
-""".strip()
-
-
-app = FastAPI(title=APP_NAME)
+# ----------------------------
+# App
+# ----------------------------
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+
+def today_str() -> str:
+    return date.today().isoformat()
+
+
+# ----------------------------
+# Official Malaysia sources (curated)
+# ----------------------------
+def official_sources() -> List[Source]:
+    # Keep URLs official / authoritative.
+    # (You can expand this list anytime.)
+    d = today_str()
+    return [
+        Source(
+            id="NFCC_NSRC_997",
+            org="NFCC (Prime Minister’s Department)",
+            title="National Scam Response Centre (NSRC) — 997",
+            url="https://nfcc.jpm.gov.my/index.php/en/about-nsrc",
+            notes="Urgent hotline if money moved / online financial fraud. Speed matters.",
+            last_verified=d,
+        ),
+        Source(
+            id="PDRM_CCID_EREPORT",
+            org="PDRM (Royal Malaysia Police)",
+            title="CCID (Commercial Crime) reporting / e-Reporting guidance",
+            url="https://rmp.gov.my/",
+            notes="Use official PDRM channels for police reports. (Your Resources tab can point to the exact CCID reporting page you chose.)",
+            last_verified=d,
+        ),
+        Source(
+            id="SC_INVESTOR_ALERT",
+            org="Securities Commission Malaysia",
+            title="Investor Alert List",
+            url="https://www.sc.com.my/investor-alert-list",
+            notes="Check suspicious/unlicensed investment offers before investing/transferring.",
+            last_verified=d,
+        ),
+        Source(
+            id="SC_SCAM_GUIDE",
+            org="Securities Commission Malaysia",
+            title="Beware of Scams (Investor Empowerment)",
+            url="https://www.sc.com.my/investor-empowerment/scam",
+            notes="Official investor education and scam warnings.",
+            last_verified=d,
+        ),
+        Source(
+            id="BNM_CONSUMER_ALERT",
+            org="Bank Negara Malaysia",
+            title="Financial Consumer Alert (FCA)",
+            url="https://www.bnm.gov.my/financial-consumer-alert-list",
+            notes="Check if an entity is listed for consumer alerts (useful for suspicious offers).",
+            last_verified=d,
+        ),
+        Source(
+            id="MCMC_ADUAN",
+            org="MCMC (Malaysian Communications and Multimedia Commission)",
+            title="Complaints / consumer channels (Aduan)",
+            url="https://www.mcmc.gov.my/en/make-a-complaint/make-a-complaint",
+            notes="For telco/SMS/calls/platform issues. Use official complaint channels.",
+            last_verified=d,
+        ),
+    ]
+
+
+def sources_map(sources: List[Source]) -> Dict[str, Source]:
+    return {s.id: s for s in sources}
+
+
+# ----------------------------
+# Redaction helpers (extra safety net)
+# ----------------------------
+_RE_URL = re.compile(r"\bhttps?://\S+\b", re.IGNORECASE)
+_RE_EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_RE_PHONE = re.compile(r"(\+?\d[\d\-\s().]{6,}\d)")
+
+def redact_text(s: str) -> str:
+    if not s:
+        return s
+    s = _RE_URL.sub("[redacted link]", s)
+    s = _RE_EMAIL.sub("[redacted email]", s)
+    s = _RE_PHONE.sub("[redacted number]", s)
+    return s
+
+def redact_list(items: Optional[List[str]]) -> Optional[List[str]]:
+    if not items:
+        return items
+    out = []
+    for x in items:
+        if isinstance(x, str):
+            out.append(redact_text(x))
+    return out
+
+def redact_actions(actions: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    if not actions:
+        return actions
+    out = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        step = redact_text(str(a.get("step", "")).strip())
+        why = a.get("why")
+        why = redact_text(str(why).strip()) if why else None
+        source_ids = a.get("source_ids")
+        if isinstance(source_ids, list):
+            source_ids = [str(x) for x in source_ids if x]
+        out.append({"step": step, "why": why, "source_ids": source_ids})
+    return out
+
+def redact_contacts(contacts: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    if not contacts:
+        return contacts
+    out = []
+    for c in contacts:
+        if not isinstance(c, dict):
+            continue
+        name = redact_text(str(c.get("name", "")).strip())
+        ctype = c.get("type", "url")
+        value = str(c.get("value", "")).strip()
+        notes = c.get("notes")
+        notes = redact_text(str(notes).strip()) if notes else None
+        source_ids = c.get("source_ids")
+        if isinstance(source_ids, list):
+            source_ids = [str(x) for x in source_ids if x]
+        out.append({"name": name, "type": ctype, "value": value, "notes": notes, "source_ids": source_ids})
+    return out
+
+
+# ----------------------------
+# Prompt (defamation-risk hardened)
+# ----------------------------
+def system_prompt() -> str:
+    return """You are Waspada Verify (Malaysia). You analyse a USER-PROVIDED SCREENSHOT for scam/fraud risk indicators and return cautious, non-identifying, Malaysia-first risk triage.
+
+CRITICAL SAFETY + DEFAMATION GUARDRAILS (MUST FOLLOW):
+1) Do NOT accuse, label, or assert criminality as fact. Never say “this is a scam”, “they are scammers”, “fraud”, “criminal”, or “illegal” as a conclusion.
+   - Use neutral, pattern-based wording: “high risk indicators”, “suspicious indicators”, “unverified solicitation”, “needs verification”.
+2) Do NOT identify parties. Do NOT repeat or quote: company/academy names, personal names, phone numbers, emails, bank account numbers, addresses, handles, or URLs found in the screenshot.
+   - Refer generically: “an unknown WhatsApp number”, “an unverified organisation name shown”, “a bank account number is shown”.
+3) Privacy: assume the output may be shared. Keep it non-identifying and avoid “naming and shaming”.
+4) If the screenshot is not clearly scam-related or text can’t be read reliably:
+   - set out_of_scope=true
+   - provide safe guidance: suggest contacting official channels in the Resources tab for clarification.
+
+MALAYSIA CONTEXT ONLY:
+- Guidance must be Malaysia-first and reference Malaysia official bodies (e.g., NFCC/NSRC, PDRM, SC, BNM, MCMC).
+
+OUTPUT REQUIREMENTS:
+Return JSON ONLY matching this schema:
+
+{
+  "verdict": "HIGH_RISK_INDICATORS" | "SUSPICIOUS_INDICATORS" | "UNCLEAR_NEEDS_VERIFICATION",
+  "risk": "HIGH" | "MEDIUM" | "LOW",
+  "scenario": "money_moved" | "asked_to_pay" | "otp_password" | "courier" | "investment" | "job" | "romance" | "impersonation" | "other",
+  "out_of_scope": boolean,
+  "malaysia_relevance": string,
+
+  "what_the_screenshot_shows": [string],
+  "analysis": string,
+  "findings": [string],
+
+  "recommended_next_actions": [
+    { "step": string, "why": string, "source_ids": [string] }
+  ],
+
+  "who_to_contact": [
+    { "name": string, "type": "phone"|"url"|"email", "value": string, "notes": string, "source_ids": [string] }
+  ],
+
+  "evidence_to_save": [string],
+
+  "caveat": string,
+
+  "sources": [
+    { "id": string, "title": string, "org": string, "url": string, "notes": string, "last_verified": "YYYY-MM-DD" }
+  ]
+}
+
+CONTENT RULES:
+- “what_the_screenshot_shows” must not be empty.
+- “recommended_next_actions” must be specific and practical.
+- Each action/contact must include source_ids that refer to items in sources.
+- Always include a caveat:
+  - Automated, pattern-based triage; not official diagnosis; may be wrong.
+  - If money moved: contact your bank + NSRC 997 immediately.
+  - Encourage verification via official lists (SC/BNM).
+"""
+
+
+def build_user_prompt(lang: Lang) -> str:
+    # Keep it simple; the system prompt carries the rules.
+    if lang == "MS":
+        return "Analisis tangkap layar ini. Pulangkan JSON sahaja mengikut skema. Ingat: jangan sebut nama/nombor/URL daripada tangkap layar."
+    if lang == "ZH":
+        return "请分析这张截图。仅返回符合架构的 JSON。注意：不要重复截图里的姓名/号码/链接。"
+    if lang == "TA":
+        return "இந்த ஸ்கிரீன்ஷாட்டை பகுப்பாய்வு செய்யவும். ஸ்கீமாவிற்கு ஏற்ப JSON மட்டும் திருப்பவும். கவனம்: பெயர்/எண்/இணைப்பை மீண்டும் சொல்ல வேண்டாம்."
+    return "Analyse this screenshot. Return JSON only matching the schema. Remember: do not repeat any names/numbers/links from the screenshot."
+
+
+def extract_json(text: str) -> Dict[str, Any]:
+    """
+    Robustly pull the first JSON object from model output.
+    """
+    if not text:
+        raise ValueError("Empty model response")
+    text = text.strip()
+
+    # If it is already pure JSON
+    if text.startswith("{") and text.endswith("}"):
+        return json.loads(text)
+
+    # Try to find a JSON object in the text
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        raise ValueError("No JSON found in model response")
+    return json.loads(m.group(0))
+
+
+def ensure_minimum_fields(obj: Dict[str, Any], sources: List[Source]) -> Dict[str, Any]:
+    """
+    Fill missing fields and enforce safe defaults.
+    """
+    # Always include sources from our official list (model should reference these IDs)
+    obj["sources"] = [s.model_dump() for s in sources]
+
+    # Ensure scenario
+    if obj.get("scenario") not in {
+        "money_moved","asked_to_pay","otp_password","courier","investment","job","romance","impersonation","other"
+    }:
+        obj["scenario"] = "other"
+
+    # Ensure verdict/risk
+    if obj.get("verdict") not in {"HIGH_RISK_INDICATORS", "SUSPICIOUS_INDICATORS", "UNCLEAR_NEEDS_VERIFICATION"}:
+        obj["verdict"] = "UNCLEAR_NEEDS_VERIFICATION"
+    if obj.get("risk") not in {"HIGH", "MEDIUM", "LOW"}:
+        obj["risk"] = "LOW"
+
+    # Ensure out_of_scope boolean
+    if not isinstance(obj.get("out_of_scope"), bool):
+        obj["out_of_scope"] = False
+
+    # Ensure what_the_screenshot_shows not empty
+    w = obj.get("what_the_screenshot_shows")
+    if not isinstance(w, list) or len([x for x in w if isinstance(x, str) and x.strip()]) == 0:
+        obj["what_the_screenshot_shows"] = [
+            "Couldn’t reliably read enough text from the screenshot to assess. Try a clearer screenshot showing the full message and context."
+        ]
+
+    # Ensure caveat
+    if not obj.get("caveat"):
+        obj["caveat"] = (
+            "This is automated, pattern-based guidance from a screenshot and is not an official finding. "
+            "It may be wrong or incomplete. Avoid sharing identifiable details publicly. "
+            "If money has moved, contact your bank immediately and call NSRC 997 (Malaysia)."
+        )
+
+    # Redact anything risky (extra guard)
+    obj["malaysia_relevance"] = redact_text(str(obj.get("malaysia_relevance", "") or "Malaysia-first guidance using official channels.").strip())
+    obj["analysis"] = redact_text(str(obj.get("analysis", "") or "").strip()) if obj.get("analysis") else obj.get("analysis")
+    obj["findings"] = redact_list(obj.get("findings"))
+    obj["what_the_screenshot_shows"] = redact_list(obj.get("what_the_screenshot_shows"))
+    obj["evidence_to_save"] = redact_list(obj.get("evidence_to_save"))
+    obj["recommended_next_actions"] = redact_actions(obj.get("recommended_next_actions"))
+    obj["who_to_contact"] = redact_contacts(obj.get("who_to_contact"))
+
+    return obj
+
+
+def openai_client():
+    if OpenAI is None:
+        raise RuntimeError("openai package not available")
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    return OpenAI(api_key=OPENAI_API_KEY)
+
+
+# ----------------------------
+# Routes
+# ----------------------------
 @app.get("/version")
 def version():
     return {
-        "name": APP_NAME,
-        "model": MODEL,
-        "has_key": bool(os.getenv("OPENAI_API_KEY")),
-        "sources_last_verified": LAST_VERIFIED,
+        "ok": True,
+        "has_key": bool(OPENAI_API_KEY),
+        "model": OPENAI_MODEL,
+        "date": today_str(),
     }
 
 
-@app.get("/resources", response_model=ResourcesOut)
+@app.get("/resources")
 def resources():
-    # Curated categories so the Resources tab is actually useful.
+    # You already designed a beautiful resources UI.
+    # This endpoint provides the structured list.
+    srcs = official_sources()
+
     categories = [
-        ResourceCategoryOut(
-            id="urgent_money",
-            title="Urgent (money moved / bank transfer)",
-            items=_pick_sources(["NFCC_NSRC_997", "PDRM_CCID_EREPORT"]),
-        ),
-        ResourceCategoryOut(
-            id="check_before_pay",
-            title="Check before you pay (accounts / investment offers)",
-            items=_pick_sources(["PDRM_SEMAKMULE", "BNM_FCA", "SC_INVESTOR_ALERT"]),
-        ),
-        ResourceCategoryOut(
-            id="cyber_phishing",
-            title="Phishing / malware / online abuse reporting",
-            items=_pick_sources(["CSM_CYBER999"]),
-        ),
-        ResourceCategoryOut(
-            id="police_reporting",
-            title="Police reporting & references",
-            items=_pick_sources(["PDRM_CCID_EREPORT", "PDRM_SEMAKMULE"]),
-        ),
+        {
+            "id": "urgent",
+            "title": "Urgent (money moved / bank transfer)",
+            "items": [
+                srcs[0].model_dump(),  # NFCC_NSRC_997
+                srcs[1].model_dump(),  # PDRM_CCID_EREPORT (placeholder root; your UI can show the exact portal URL you use)
+            ],
+        },
+        {
+            "id": "check_before_pay",
+            "title": "Check before you pay (accounts / investment offers)",
+            "items": [
+                srcs[2].model_dump(),  # SC_INVESTOR_ALERT
+                srcs[3].model_dump(),  # SC_SCAM_GUIDE
+                srcs[4].model_dump(),  # BNM_CONSUMER_ALERT
+            ],
+        },
+        {
+            "id": "telco_platform",
+            "title": "Calls / SMS / platforms",
+            "items": [
+                srcs[5].model_dump(),  # MCMC_ADUAN
+            ],
+        },
     ]
-    return ResourcesOut(last_verified=LAST_VERIFIED, categories=categories)
+
+    return {"result": {"last_verified": today_str(), "categories": categories}}
+
+
+@app.get("/plan/{scenario}")
+def plan(scenario: str):
+    """
+    Lightweight plan endpoint used by your Toolkit scenario pages.
+    This stays non-identifying and Malaysia-first.
+    """
+    s = scenario.strip().lower()
+    scenario_norm: Scenario = "other"  # default
+    allowed = {
+        "money_moved": "money_moved",
+        "asked_to_pay": "asked_to_pay",
+        "otp_password": "otp_password",
+        "courier": "courier",
+        "investment": "investment",
+        "job": "job",
+        "romance": "romance",
+        "impersonation": "impersonation",
+        "other": "other",
+    }
+    if s in allowed:
+        scenario_norm = allowed[s]
+
+    srcs = official_sources()
+    smap = sources_map(srcs)
+
+    # Minimal per-scenario “When:” text
+    when_map = {
+        "money_moved": "Immediately",
+        "asked_to_pay": "Before paying / transferring",
+        "otp_password": "Immediately",
+        "courier": "Before paying fees / clicking links",
+        "investment": "Before transferring / investing",
+        "job": "Before paying fees / sharing documents",
+        "romance": "Before sending money or gifts",
+        "impersonation": "Immediately",
+        "other": "Immediately",
+    }
+
+    # Shared building blocks
+    def act(step: str, why: str, ids: List[str]) -> Dict[str, Any]:
+        return {"step": step, "why": why, "source_ids": ids}
+
+    # Contacts (non-identifying, official)
+    contacts = [
+        {
+            "name": "National Scam Response Centre (NSRC) — 997",
+            "type": "phone",
+            "value": "997",
+            "notes": "If money has moved / urgent online financial fraud.",
+            "source_ids": ["NFCC_NSRC_997"],
+        },
+        {
+            "name": "Securities Commission Malaysia — Investor Alert List",
+            "type": "url",
+            "value": smap["SC_INVESTOR_ALERT"].url,
+            "notes": "Check suspicious/unlicensed investment offers.",
+            "source_ids": ["SC_INVESTOR_ALERT"],
+        },
+        {
+            "name": "Bank Negara Malaysia — Financial Consumer Alert",
+            "type": "url",
+            "value": smap["BNM_CONSUMER_ALERT"].url,
+            "notes": "Check consumer alert listings.",
+            "source_ids": ["BNM_CONSUMER_ALERT"],
+        },
+        {
+            "name": "MCMC — Make a Complaint",
+            "type": "url",
+            "value": smap["MCMC_ADUAN"].url,
+            "notes": "For SMS/calls/platform complaints via official channel.",
+            "source_ids": ["MCMC_ADUAN"],
+        },
+    ]
+
+    # Scenario-specific steps (still general but relevant)
+    do_now = []
+    next_steps = []
+    evidence = [
+        "Screenshots of the full conversation (including timestamps).",
+        "Phone number(s), usernames, URLs, QR codes shown (store privately).",
+        "Bank details / transaction references / receipts (if any).",
+        "Any profiles, ads, or pages involved (capture full page).",
+    ]
+
+    # Money moved
+    if scenario_norm == "money_moved":
+        do_now = [
+            act("Contact your bank immediately and report unauthorised transfers.", "Speed matters to increase the chance of recovery.", ["NFCC_NSRC_997"]),
+            act("Call NSRC 997 as soon as possible.", "NSRC coordinates response for online financial fraud in Malaysia.", ["NFCC_NSRC_997"]),
+            act("Make a police report via official PDRM channels if appropriate.", "A report supports investigation and follow-up.", ["PDRM_CCID_EREPORT"]),
+        ]
+        next_steps = [
+            act("Stop further transfers and stop engaging with the other party.", "Scammers often push urgency to trigger more payments.", ["NFCC_NSRC_997"]),
+            act("Preserve evidence and share it only with your bank / authorities.", "Evidence supports investigation and dispute handling.", ["NFCC_NSRC_997"]),
+        ]
+
+    elif scenario_norm == "investment":
+        do_now = [
+            act("Do not transfer funds based on promised returns or urgency.", "Guaranteed/high returns and urgency are common scam indicators.", ["SC_SCAM_GUIDE"]),
+            act("Check the entity on SC Investor Alert List and BNM FCA before investing.", "Helps identify suspicious/unlicensed entities.", ["SC_INVESTOR_ALERT", "BNM_CONSUMER_ALERT"]),
+        ]
+        next_steps = [
+            act("If you already transferred money, treat it as money moved and call NSRC 997.", "Early reporting improves response options.", ["NFCC_NSRC_997"]),
+        ]
+
+    elif scenario_norm == "otp_password":
+        do_now = [
+            act("Stop engaging. Do not click links, scan QR codes, or install apps requested by the other party.", "Remote-control apps and links are used to take over accounts.", ["NFCC_NSRC_997"]),
+            act("Do not share OTP/TAC/passwords. If shared, change passwords immediately and secure accounts.", "OTP/TAC enables rapid account takeover and fund movement.", ["NFCC_NSRC_997"]),
+            act("If money has moved, contact your bank immediately and call NSRC 997.", "Speed matters for fraud response.", ["NFCC_NSRC_997"]),
+        ]
+        next_steps = [
+            act("Save evidence (screenshots, chat logs, numbers, URLs) privately.", "Supports bank and authority investigation.", ["NFCC_NSRC_997"]),
+        ]
+
+    elif scenario_norm == "courier":
+        do_now = [
+            act("Do not pay ‘release fees’ or ‘delivery fees’ from unsolicited courier messages.", "Fee-demand tactics are common in courier scams.", ["NFCC_NSRC_997"]),
+            act("Avoid clicking links in SMS; verify via official courier/bank sites.", "Links may lead to phishing pages.", ["MCMC_ADUAN"]),
+        ]
+        next_steps = [
+            act("If you entered bank details or paid, treat it as money moved and call NSRC 997.", "Early reporting helps limit damage.", ["NFCC_NSRC_997"]),
+        ]
+
+    elif scenario_norm == "job":
+        do_now = [
+            act("Do not pay ‘processing fees’, ‘training fees’, or ‘equipment fees’ to get a job.", "Upfront payments are a common job-scam pattern.", ["NFCC_NSRC_997"]),
+            act("Verify the company via official channels and avoid WhatsApp-only ‘HR’ processes.", "Scammers imitate real companies but use unofficial routes.", ["NFCC_NSRC_997"]),
+        ]
+        next_steps = [
+            act("If you already paid, contact your bank and call NSRC 997 immediately.", "Treat it as money moved.", ["NFCC_NSRC_997"]),
+            act("If pressured to transfer, consider making a police report via official PDRM channels.", "Reporting helps enforcement follow-up.", ["PDRM_CCID_EREPORT"]),
+        ]
+
+    elif scenario_norm == "romance":
+        do_now = [
+            act("Do not send money, gift cards, or crypto to someone you haven’t met and verified.", "Romance scams often escalate emotional pressure into transfers.", ["NFCC_NSRC_997"]),
+            act("Watch for secrecy, urgency, and requests to move chat off-platform.", "Isolation tactics reduce your ability to verify.", ["NFCC_NSRC_997"]),
+        ]
+        next_steps = [
+            act("Talk to a trusted friend/family member before taking action.", "A second opinion helps reduce manipulation risk.", ["NFCC_NSRC_997"]),
+            act("If money moved, call NSRC 997 and contact your bank immediately.", "Time is critical.", ["NFCC_NSRC_997"]),
+        ]
+
+    elif scenario_norm == "impersonation":
+        do_now = [
+            act("Do not trust caller ID or WhatsApp profile photos. Verify using official numbers from official websites.", "Impersonation relies on spoofing and fake identities.", ["NFCC_NSRC_997"]),
+            act("Do not share OTP/TAC/passwords or approve unknown transactions.", "Account takeover can happen fast.", ["NFCC_NSRC_997"]),
+        ]
+        next_steps = [
+            act("If money moved, call NSRC 997 and contact your bank immediately.", "Early action helps.", ["NFCC_NSRC_997"]),
+            act("If needed, report via official PDRM channels.", "Supports investigation.", ["PDRM_CCID_EREPORT"]),
+        ]
+
+    elif scenario_norm == "asked_to_pay":
+        do_now = [
+            act("Pause before paying. Don’t be rushed by urgency or threats.", "Urgency is a common scam pressure tactic.", ["NFCC_NSRC_997"]),
+            act("Verify the request using official channels (official site / official hotline), not numbers in the message.", "Prevents being routed to fake ‘support’.", ["NFCC_NSRC_997"]),
+        ]
+        next_steps = [
+            act("If you already paid, treat it as money moved and call NSRC 997.", "Early reporting matters.", ["NFCC_NSRC_997"]),
+        ]
+
+    else:
+        do_now = [
+            act("Stop engaging and do not follow instructions from the other party (no links, no QR scans, no app installs).", "Urgency tactics can push you to act before verifying.", ["NFCC_NSRC_997"]),
+            act("If money moved, contact your bank immediately and call NSRC 997 right away.", "Speed matters.", ["NFCC_NSRC_997"]),
+        ]
+        next_steps = [
+            act("Preserve evidence and seek clarification via official channels in Resources tab.", "Official channels can advise the right path.", ["NFCC_NSRC_997", "MCMC_ADUAN"]),
+        ]
+
+    result = {
+        "scenario": scenario_norm,
+        "when": when_map.get(scenario_norm, "Immediately"),
+        "do_this_now": do_now,
+        "next_steps": next_steps,
+        "who_to_contact": contacts,
+        "evidence_to_save": evidence,
+        "sources": [x.model_dump() for x in srcs],
+        "caveat": (
+            "This is informational guidance and may be incomplete. It is not an official finding. "
+            "Avoid sharing identifiable details publicly. If money has moved, contact your bank and call NSRC 997 immediately."
+        ),
+    }
+
+    return {"result": result}
 
 
 @app.post("/analyze")
 def analyze(payload: AnalyzeIn):
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
+
+    if OpenAI is None:
+        raise HTTPException(status_code=500, detail="openai package not installed")
+
+    img = payload.image_data_url
+    if not img.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="image_data_url must be a data:image/... base64 URL")
+
+    srcs = official_sources()
+
+    client = openai_client()
+
     try:
-        if not payload.image_data_url.startswith("data:image/"):
-            raise HTTPException(status_code=400, detail="image_data_url must be a data:image/... base64 URL")
-
-        client = _client()
-        system = _json_mode_prompt()
-
-        # Vision: include the image as image_url in chat.completions
-        messages = [
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": f"Language hint: {payload.lang or 'EN'}"},
-                    {"type": "image_url", "image_url": {"url": payload.image_data_url}},
-                    {"type": "text", "text": "Analyse this screenshot for Malaysia scam risk and next actions."},
-                ],
-            },
-        ]
-
+        # Vision input: attach image to the user message
         resp = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            response_format={"type": "json_object"},
+            model=OPENAI_MODEL,
             temperature=0.2,
             max_tokens=1200,
+            messages=[
+                {"role": "system", "content": system_prompt()},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": build_user_prompt(payload.lang)},
+                        {"type": "image_url", "image_url": {"url": img}},
+                    ],
+                },
+            ],
         )
 
-        raw = resp.choices[0].message.content or "{}"
-        data = json.loads(raw)
+        text = (resp.choices[0].message.content or "").strip()
+        obj = extract_json(text)
+        obj = ensure_minimum_fields(obj, srcs)
 
-        # Normalize + enforce critical fields
-        out_of_scope = bool(data.get("out_of_scope", False))
-        scenario = str(data.get("scenario", "OTHER")).strip() or "OTHER"
-        verdict = str(data.get("verdict", "UNCLEAR")).strip() or "UNCLEAR"
-        risk = str(data.get("risk", "LOW")).strip() or "LOW"
+        # Validate structure
+        result = VerifyResult(**obj).model_dump()
 
-        malaysia_relevance = str(data.get("malaysia_relevance", "")).strip()
-        if not malaysia_relevance:
-            malaysia_relevance = "Malaysia relevance not clear from the screenshot."
-
-        what_shows = _ensure_nonempty_list(
-            data.get("what_the_screenshot_shows"),
-            "Couldn’t reliably read the text; retake a clearer screenshot (full message visible, no blur).",
-        )
-
-        analysis = str(data.get("analysis", "")).strip()
-        if not analysis:
-            analysis = "Based on what is visible, this may involve a scam pattern. Follow Malaysia-first safety steps below."
-
-        findings = data.get("findings", [])
-        if not isinstance(findings, list):
-            findings = []
-        findings = [str(x).strip() for x in findings if str(x).strip()]
-
-        # recommended_next_actions objects
-        rna = data.get("recommended_next_actions", [])
-        actions: List[ActionOut] = []
-        used_source_ids: List[str] = []
-
-        if isinstance(rna, list):
-            for item in rna[:12]:
-                if not isinstance(item, dict):
-                    continue
-                step = str(item.get("step", "")).strip()
-                why = str(item.get("why", "")).strip()
-                sids = item.get("source_ids", [])
-                if not isinstance(sids, list):
-                    sids = []
-                sids = [str(s).strip() for s in sids if str(s).strip()]
-                if step:
-                    actions.append(ActionOut(step=step, why=why, source_ids=sids))
-                    used_source_ids.extend(sids)
-
-        # who_to_contact objects
-        wtc = data.get("who_to_contact", [])
-        contacts: List[ContactOut] = []
-        if isinstance(wtc, list):
-            for item in wtc[:10]:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name", "")).strip()
-                typ = str(item.get("type", "")).strip()
-                val = str(item.get("value", "")).strip()
-                notes = str(item.get("notes", "")).strip()
-                sids = item.get("source_ids", [])
-                if not isinstance(sids, list):
-                    sids = []
-                sids = [str(s).strip() for s in sids if str(s).strip()]
-                if name and typ and val:
-                    contacts.append(ContactOut(name=name, type=typ, value=val, notes=notes, source_ids=sids))
-                    used_source_ids.extend(sids)
-
-        evidence = data.get("evidence_to_save", [])
-        if not isinstance(evidence, list):
-            evidence = []
-        evidence = [str(x).strip() for x in evidence if str(x).strip()]
-
-        caveat = str(data.get("caveat", "")).strip()
-        if not caveat:
-            caveat = (
-                "This is AI-generated guidance based on the screenshot and may be wrong or incomplete. "
-                "For urgent cases (especially if money moved), contact your bank and the relevant Malaysian authorities."
-            )
-
-        # If out_of_scope, ensure we still push Malaysia-first guidance
-        if out_of_scope:
-            # Add a small default action + contacts based on official sources
-            if not actions:
-                actions = [
-                    ActionOut(
-                        step="If you suspect a scam or money has moved, contact your bank immediately and call NSRC 997.",
-                        why="Fast action can improve the chances of stopping transfers.",
-                        source_ids=["NFCC_NSRC_997"],
-                    )
-                ]
-                used_source_ids.append("NFCC_NSRC_997")
-
-        # Final sources list for UI
-        used_source_ids = [s for s in used_source_ids if s in SOURCES]
-        sources = _pick_sources(used_source_ids)
-
-        result = AnalyzeOut(
-            out_of_scope=out_of_scope,
-            malaysia_relevance=malaysia_relevance,
-            scenario=scenario,
-            verdict=verdict,
-            risk=risk,
-            what_the_screenshot_shows=what_shows,
-            analysis=analysis,
-            findings=findings,
-            recommended_next_actions=actions,
-            who_to_contact=contacts,
-            evidence_to_save=evidence,
-            caveat=caveat,
-            sources=sources,
-        )
-
-        return {"result": result.model_dump()}
+        return {"result": result}
 
     except HTTPException:
         raise
     except Exception as e:
-        msg = str(e)
-        log.exception("Analyze failed: %s", msg)
-        low = msg.lower()
-        if "invalid_api_key" in low or "incorrect api key" in low or "401" in low:
-            raise HTTPException(status_code=500, detail="Auth failed. Check OPENAI_API_KEY on Render and redeploy.")
-        if "rate limit" in low or "429" in low:
-            raise HTTPException(status_code=503, detail="AI is rate-limited. Try again in a minute.")
-        if "timeout" in low:
-            raise HTTPException(status_code=504, detail="AI timed out. Try again.")
-        raise HTTPException(status_code=502, detail=f"AI service error: {msg}")
+        raise HTTPException(status_code=500, detail=f"Analyze failed: {str(e)}")
