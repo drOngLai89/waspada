@@ -17,15 +17,12 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.example.waspada",
-      "buildNumber": "6",
-      "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      }
+      "bundleIdentifier": "com.drshermankoh.waspada",
+      "buildNumber": "6"
     },
     "android": {
-      "package": "com.example.waspada",
-      "versionCode": 6,
+      "package": "com.drshermankoh.waspada",
+      "versionCode": 7,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
